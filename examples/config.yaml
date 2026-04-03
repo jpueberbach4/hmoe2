@@ -1,0 +1,106 @@
+# ==============================================================================
+# GLOBAL TASK DEFINITIONS
+# ==============================================================================
+tasks:
+  - name: task_top
+    num_classes: 2
+    loss_weight: 1.0
+    pos_weight: 15.0
+    enabled: false
+    label_target: "example-pivot-finder-close-3_80_tops_0.0001_5_0.75"
+
+  - name: task_bot
+    num_classes: 2
+    loss_weight: 1.0
+    pos_weight: 3.0
+    label_target: "example-pivot-finder-close-2_46_bottoms_0.0001_5_0.75"
+
+# ==============================================================================
+# MIXTURE OF EXPERTS TOPOLOGY MAP 
+# ==============================================================================
+tree:
+  name: root_router
+  type: ROUTER
+  gate_type: TCN
+  children:
+
+    - name: detect_bottoms
+      type: ROUTER
+      gate_type: TOPK
+      noise_std: 0.5
+      top_k: 1
+      children:
+
+        # A. Strong Downtrend Continuation Expert (should dominate most of the time)
+        - name: absolute_bottom_expert_lstm
+          type: EXPERT
+          backend: LSTM
+          hidden_dim: 16
+          features:
+            #- name: "rsi-sma-normalized_14"
+            - name: "rsi-sma-normalized_28"
+            - name: "rsi-sma-normalized_42"
+            #- name: "zscore_20"
+            - name: "zscore_50"
+            - name: "lower-wick-ratio"
+            - name: "talib-adx_20"
+            - name: "talib-minus-di_20"
+            - name: "drawdown-from-high_20"
+              clamp: 5.0
+          allowed_tasks: ["task_bot"]   # it will learn to predict low probability
+
+        # A. Strong Downtrend Continuation Expert (should dominate most of the time)
+        - name: absolute_bottom_expert_tcn
+          type: EXPERT
+          backend: TCN
+          hidden_dim: 16
+          features:
+            #- name: "rsi-sma-normalized_14"
+            - name: "rsi-sma-normalized_28"
+            - name: "rsi-sma-normalized_42"
+            #- name: "zscore_20"
+            - name: "zscore_50"
+            - name: "lower-wick-ratio"
+            - name: "talib-adx_20"
+            - name: "talib-minus-di_20"
+            - name: "drawdown-from-high_20"
+              clamp: 5.0
+          allowed_tasks: ["task_bot"]   # it will learn to predict low probability
+
+        # A. Strong Downtrend Continuation Expert (should dominate most of the time)
+        - name: absolute_bottom_expert_gr
+          type: EXPERT
+          backend: GR
+          hidden_dim: 16
+          features:
+            #- name: "rsi-sma-normalized_14"
+            - name: "rsi-sma-normalized_28"
+            - name: "rsi-sma-normalized_42"
+            #- name: "zscore_20"
+            - name: "zscore_50"
+            - name: "lower-wick-ratio"
+            - name: "talib-adx_20"
+            - name: "talib-minus-di_20"
+            - name: "drawdown-from-high_20"
+              clamp: 5.0
+          allowed_tasks: ["task_bot"]   # it will learn to predict low probability
+
+        # A. Strong Downtrend Continuation Expert (should dominate most of the time)
+        - name: absolute_bottom_expert_gru
+          type: EXPERT
+          backend: GRU
+          hidden_dim: 16
+          features:
+            #- name: "rsi-sma-normalized_14"
+            - name: "rsi-sma-normalized_28"
+            - name: "rsi-sma-normalized_42"
+            #- name: "zscore_20"
+            - name: "zscore_50"
+            - name: "lower-wick-ratio"
+            - name: "talib-adx_20"
+            - name: "talib-minus-di_20"
+            - name: "drawdown-from-high_20"
+              clamp: 5.0
+          allowed_tasks: ["task_bot"]   # it will learn to predict low probability
+
+
