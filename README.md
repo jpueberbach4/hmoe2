@@ -41,6 +41,10 @@ pip install torch pyyaml requests
 
 See examples directory.
 
+## Future
+
+The Mixture of Experts (MoE) architecture will soon be extended to support Rough Path and Matrix Profile (motif) experts. This enhancement allows individual experts to independently isolate and detect geometric structures within the feature space. When aggregated by the routing mechanism, these localized insights will improve the model's overall predictive confidence. For example, deploying both a Temporal Convolutional Network (TCN) and a Matrix Profile (MP) over an RSI feature enables the system to simultaneously extract momentum, velocity, levels, and underlying geometric shapes associated with the target markings
+
 ## License
 
 This project is licensed under the MIT License.
