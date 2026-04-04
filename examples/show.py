@@ -321,7 +321,6 @@ def main():
     total_rows = 4 + num_indicators
     
     # Compute dynamic row heights: Price gets 4 units, core probs 1 unit each.
-    # We INCREASED the indicator panels to 1.25 units (+25% height)
     row_heights = [4.0, 1.0, 1.0, 1.0] + [1.25] * num_indicators
     
     fig = make_subplots(
@@ -389,6 +388,7 @@ def main():
         if f_name in feature_to_idx:
             f_data = master_np[:, feature_to_idx[f_name]]
             
+            # Base indicator line
             fig.add_trace(
                 go.Scatter(
                     x=x_indices, 
@@ -402,7 +402,7 @@ def main():
                 col=1
             )
             
-            # --- ADDED: Overlay the Ground Truth Stars on the Input Features ---
+            # --- OVERLAY: Ground Truth Targets (Yellow/Orange Stars) ---
             if len(actual_top_idx) > 0:
                 fig.add_trace(
                     go.Scatter(
@@ -428,6 +428,35 @@ def main():
                         showlegend=False, 
                         name='Actual Bot Value',
                         hovertemplate="Bot Marker Value: %{y:.4f}<extra></extra>"
+                    ), 
+                    row=row_idx, 
+                    col=1
+                )
+
+            # --- OVERLAY: Model Output Hits (Cyan/Red Highlighters) ---
+            if len(fire_top_idx) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=fire_top_idx, 
+                        y=f_data[fire_top_idx], 
+                        mode='markers', 
+                        marker=dict(color='red', size=6, opacity=0.5), 
+                        showlegend=False, 
+                        hoverinfo='skip'  # Skip hover so it doesn't clutter the tooltip
+                    ), 
+                    row=row_idx, 
+                    col=1
+                )
+                
+            if len(fire_bot_idx) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=fire_bot_idx, 
+                        y=f_data[fire_bot_idx], 
+                        mode='markers', 
+                        marker=dict(color='cyan', size=6, opacity=0.5), 
+                        showlegend=False, 
+                        hoverinfo='skip'
                     ), 
                     row=row_idx, 
                     col=1

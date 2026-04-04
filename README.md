@@ -45,6 +45,10 @@ See examples directory.
 
 The Mixture of Experts (MoE) architecture will soon be extended to support Rough Path and Matrix Profile (motif) experts. This enhancement allows individual experts to independently isolate and detect geometric structures within the feature space. When aggregated by the routing mechanism, these localized insights will improve the model's overall predictive confidence. For example, deploying both a Temporal Convolutional Network (TCN) and a Matrix Profile (MP) over an RSI feature enables the system to simultaneously extract momentum, velocity, levels, and underlying geometric shapes associated with the target markings
 
+![Example](images/example.gif)
+
+The example above features a heatmap illustrating the frequency of specific geometric structures within the feature space, with the top eight most prominent structures displayed at the bottom of the screen. Ultimately, we intend to leverage matrix profiles and rough paths to detect classic structural patterns on price charts—such as double bottoms, head-and-shoulders (SHS), and inverse head-and-shoulders (ISHS)—as well as to identify divergences across technical indicators.
+
 ## License
 
 This project is licensed under the MIT License.
