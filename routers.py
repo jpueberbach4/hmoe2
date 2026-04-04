@@ -64,6 +64,11 @@ class HmoeRouter(HmoeNode):
         gate_type = self.config.get('gate_type', 'TCN').upper()
         noise_std = self.config.get('noise_std', 0.1)
 
+        # Bypass the competitive gate completely for independent, parallel task routing
+        if gate_type == 'PASS_THROUGH':
+            self.gate = None
+            return
+
         # Instantiate appropriate gate type
         if gate_type == 'LINEAR':
             self.gate = HmoeGate(input_dim=input_dim, num_children=num_children)
@@ -139,7 +144,12 @@ class HmoeRouter(HmoeNode):
         narrowed_payload = payload.get_subset(branch_features)
 
         # Compute routing weights using the gate
-        gate_weights = self.gate(narrowed_payload)
+        if self.gate is None:
+            # Pure parallel split: give 100% traffic to ALL children unconditionally
+            raw_t = narrowed_payload.to_tensor()
+            gate_weights = torch.ones(raw_t.size(0), raw_t.size(1), len(self.branches), device=raw_t.device)
+        else:
+            gate_weights = self.gate(narrowed_payload)
 
         # Collect outputs from each child branch
         child_outputs: List[HmoeOutput] = []
@@ -186,23 +196,23 @@ class HmoeRouter(HmoeNode):
         # Compute load-balancing penalty for routing distribution
         num_branches = len(self.branches)
 
-        if num_branches > 1:
+        if num_branches > 1 and self.gate is not None:
             # Compute average routing probability per branch
             mean_routing_probs = gate_weights.mean(dim=(0, 1))
 
             # Encourage uniform distribution across branches
             balance_loss = (num_branches * torch.sum(mean_routing_probs ** 2)) - 1.0
         else:
-            # No penalty when only one branch exists
-            balance_loss = torch.tensor(0.0, device=gate_weights.device)
+            # No penalty when only one branch exists or gate is bypassed (PASS_THROUGH)
+            balance_loss = torch.tensor(0.0, device=narrowed_payload.to_tensor().device)
 
         # Aggregate routing losses from child nodes
-        child_routing_loss_raw = torch.tensor(0.0, device=gate_weights.device)
+        child_routing_loss_raw = torch.tensor(0.0, device=narrowed_payload.to_tensor().device)
 
         for out in child_outputs:
             # Only include routing loss if present
             if getattr(out, 'routing_loss', None) is not None:
-                child_routing_loss_raw += out.routing_loss.to_tensor().to(gate_weights.device)
+                child_routing_loss_raw += out.routing_loss.to_tensor().to(narrowed_payload.to_tensor().device)
 
         # Combine local balance loss with child routing losses
         total_routing_loss_raw = balance_loss + child_routing_loss_raw
