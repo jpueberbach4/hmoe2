@@ -77,6 +77,7 @@ def main():
     parser.add_argument("--symbol", type=str, default="GBP-USD", help="Ticker Symbol")
     parser.add_argument("--sell-threshold", type=float, default=0.5, help="Override SELL threshold.")
     parser.add_argument("--buy-threshold", type=float, default=0.5, help="Override BUY threshold.")
+    parser.add_argument("--bear-penalty", type=float, default=0.0, help="Max threshold penalty during bear markets.")
     args = parser.parse_args()
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -144,6 +145,19 @@ def main():
     # Overwrite the master tensor with the blinded math
     clean_master = HmoeTensor(tensor=blinded_math, indices=clean_master.indices)
 
+    # --- EXTRACT SANITIZED INPUT FEATURES FOR PLOTTING ---
+    # Convert exactly what the neural network sees back to numpy
+    master_np = clean_master.tensor[0].cpu().numpy()
+    feature_to_idx = {f.name: idx for idx, f in enumerate(clean_master.indices)}
+    
+    # Filter out cheat features (labels) to only plot the true inputs
+    input_feature_names = []
+    seen_inputs = set()
+    for f in root_router.subtree_features:
+        if not isinstance(f, HmoeCheatFeature) and f.name not in seen_inputs:
+            input_feature_names.append(f.name)
+            seen_inputs.add(f.name)
+
     # 4. Load Weights (Now that the architecture is fully linked)
     root_router.to(DEVICE)
     checkpoint = torch.load(args.checkpoint, map_location=DEVICE)
@@ -152,7 +166,7 @@ def main():
     logger.info(f"Successfully loaded checkpoint: {args.checkpoint}")
 
     # =========================================================
-    # THE UPGRADE: RECURSIVE ROUTER INTERCEPTION
+    # RECURSIVE ROUTER INTERCEPTION
     # =========================================================
     router_hooks = []
     router_probs = {}
@@ -161,15 +175,21 @@ def main():
     def attach_hooks(node):
         """Walks the MoE tree and attaches a listener to every Router gate."""
         if isinstance(node, HmoeRouter):
-            def make_hook(name):
-                def hook(module, input, output):
-                    # Store output shape: [Seq, Num_Branches] for this specific router
-                    router_probs[name] = output.detach().cpu().numpy()[0] 
-                return hook
-            
             router_branch_names[node.name] = [child.name for child in node.branches]
-            handle = node.gate.register_forward_hook(make_hook(node.name))
-            router_hooks.append(handle)
+            
+            # --- THE FIX: Only attach hook if the gate physically exists (Ignore PASS_THROUGH) ---
+            if getattr(node, 'gate', None) is not None:
+                def make_hook(name):
+                    def hook(module, input, output):
+                        # Store output shape: [Seq, Num_Branches] for this specific router
+                        router_probs[name] = output.detach().cpu().numpy()[0] 
+                    return hook
+                
+                handle = node.gate.register_forward_hook(make_hook(node.name))
+                router_hooks.append(handle)
+            else:
+                # If gate is None (PASS_THROUGH), mock 100% traffic to all branches for the dashboard
+                router_probs[node.name] = np.ones((sequence_length, len(node.branches)))
             
             for child in node.branches:
                 attach_hooks(child)
@@ -201,11 +221,19 @@ def main():
     else:
         prob_bot = np.zeros(sequence_length)
         
+    # --- ADDED: Extraction for task_bull ---
+    task_bull_config = global_tasks.get('task_bull')
+    if task_bull_config and getattr(task_bull_config, 'enabled', True) and 'task_bull' in baseline_preds.task_logits:
+        prob_bull = F.softmax(baseline_preds.task_logits['task_bull'].to_tensor(), dim=-1)[0, :, 1].cpu().numpy()
+    else:
+        prob_bull = np.zeros(sequence_length)
+
     # ---------------------------------------------------------
     # STRICT SEQUENTIAL OCCLUSION
     # ---------------------------------------------------------
     logger.info("Executing Feature Occlusion Analysis...")
-    feature_impacts = {f.name: {'top': np.zeros(sequence_length), 'bot': np.zeros(sequence_length)} 
+    # Add 'bull' to the impacts dictionary
+    feature_impacts = {f.name: {'top': np.zeros(sequence_length), 'bot': np.zeros(sequence_length), 'bull': np.zeros(sequence_length)} 
                        for f in clean_master.indices}
 
     with torch.no_grad():
@@ -226,9 +254,15 @@ def main():
                 occ_prob_bot = F.softmax(occ_preds.task_logits['task_bot'].to_tensor(), dim=-1)[0, :, 1].cpu().numpy()
             else:
                 occ_prob_bot = np.zeros(sequence_length)
+                
+            if task_bull_config and getattr(task_bull_config, 'enabled', True) and 'task_bull' in occ_preds.task_logits:
+                occ_prob_bull = F.softmax(occ_preds.task_logits['task_bull'].to_tensor(), dim=-1)[0, :, 1].cpu().numpy()
+            else:
+                occ_prob_bull = np.zeros(sequence_length)
             
             feature_impacts[feature.name]['top'] = np.abs(prob_top - occ_prob_top)
             feature_impacts[feature.name]['bot'] = np.abs(prob_bot - occ_prob_bot)
+            feature_impacts[feature.name]['bull'] = np.abs(prob_bull - occ_prob_bull)
 
     # ---------------------------------------------------------
     # DASHBOARD & HOVER TEXT ASSEMBLY
@@ -237,7 +271,8 @@ def main():
     for i in range(sequence_length):
         txt = f"<b>Multi-Task Profile:</b><br>"
         txt += f" - Top Prob: {prob_top[i]:.3f}<br>"
-        txt += f" - Bot Prob: {prob_bot[i]:.3f}<br><br>"
+        txt += f" - Bot Prob: {prob_bot[i]:.3f}<br>"
+        txt += f" - Bull Prob: {prob_bull[i]:.3f}<br><br>"
         
         # --- Nested Router Display ---
         txt += f"<b>Router Delegation:</b><br>"
@@ -246,27 +281,35 @@ def main():
                 probs = router_probs[r_name][i]
                 txt += f" <i>{r_name}</i><br>"
                 for b_idx, b_name in enumerate(b_names):
-                    if b_idx < len(probs) and probs[b_idx] > 0.0001: # Show down to 0.01%
+                    if b_idx < len(probs) and probs[b_idx] > 0.0001: 
                         txt += f"  ├─ {b_name}: {probs[b_idx]:.2%}<br>"
         txt += "<br>"
 
         step_top_impacts = sorted([(k, v['top'][i]) for k, v in feature_impacts.items()], key=lambda x: x[1], reverse=True)
         step_bot_impacts = sorted([(k, v['bot'][i]) for k, v in feature_impacts.items()], key=lambda x: x[1], reverse=True)
+        step_bull_impacts = sorted([(k, v['bull'][i]) for k, v in feature_impacts.items()], key=lambda x: x[1], reverse=True)
         
         total_top = sum(x[1] for x in step_top_impacts) + 1e-9
         total_bot = sum(x[1] for x in step_bot_impacts) + 1e-9
+        total_bull = sum(x[1] for x in step_bull_impacts) + 1e-9
 
         # --- Micro-Percentage Feature Display ---
         txt += f"<b>Impact on TOP Decision:</b><br>"
-        for k, v in step_top_impacts: # Unbounded (removed [:5])
+        for k, v in step_top_impacts: 
             pct = (v / total_top) * 100
-            if pct >= 0.01: # Dropped threshold from 1.0% to 0.01%
+            if pct >= 0.01: 
                 txt += f"{k}: <b>{pct:.2f}%</b><br>"
                 
         txt += f"<br><b>Impact on BOT Decision:</b><br>"
-        for k, v in step_bot_impacts: # Unbounded (removed [:5])
+        for k, v in step_bot_impacts: 
             pct = (v / total_bot) * 100
-            if pct >= 0.01: # Dropped threshold from 1.0% to 0.01%
+            if pct >= 0.01: 
+                txt += f"{k}: <b>{pct:.2f}%</b><br>"
+                
+        txt += f"<br><b>Impact on BULL Decision:</b><br>"
+        for k, v in step_bull_impacts: 
+            pct = (v / total_bull) * 100
+            if pct >= 0.01: 
                 txt += f"{k}: <b>{pct:.2f}%</b><br>"
                 
         hover_texts.append(txt)
@@ -274,29 +317,47 @@ def main():
     # =========================================================================
     # PLOTLY CONSTRUCTION
     # =========================================================================
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
+    num_indicators = len(input_feature_names)
+    total_rows = 4 + num_indicators
+    
+    # Compute dynamic row heights: Price gets 4 units, core probs 1 unit each.
+    # We INCREASED the indicator panels to 1.25 units (+25% height)
+    row_heights = [4.0, 1.0, 1.0, 1.0] + [1.25] * num_indicators
+    
+    fig = make_subplots(
+        rows=total_rows, 
+        cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.01, 
+        row_heights=row_heights
+    )
+    
     x_indices = np.arange(sequence_length)
     offset_dist = np.nanmean(ohlcv_dict["close"]) * 0.0015
 
     # 1. Price Chart
     fig.add_trace(go.Candlestick(x=x_indices, open=ohlcv_dict["open"], high=ohlcv_dict["high"], low=ohlcv_dict["low"], close=ohlcv_dict["close"], name='Price', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'), row=1, col=1)
     
-    # 2. Extract Raw Targets (if available in fetched data) for truth markers
+    # 2. Extract Raw Targets & Pre-compute arrays for the indicator panels
+    actual_top_idx = []
     if task_top_config and getattr(task_top_config, 'label_target', None):
         top_label_key = task_top_config.label_target.name
         if top_label_key in raw_data:
             actual_top_idx = np.where(np.array(raw_data[top_label_key]) == 1.0)[0]
             fig.add_trace(go.Scatter(x=actual_top_idx, y=ohlcv_dict["high"][actual_top_idx] + offset_dist, mode='markers', marker=dict(symbol='star', color='orange', size=12, line=dict(width=1, color='black')), name='Actual Tops'), row=1, col=1)
             
+    actual_bot_idx = []
     if task_bot_config and getattr(task_bot_config, 'label_target', None):
         bot_label_key = task_bot_config.label_target.name
         if bot_label_key in raw_data:
             actual_bot_idx = np.where(np.array(raw_data[bot_label_key]) == -1.0)[0]
             fig.add_trace(go.Scatter(x=actual_bot_idx, y=ohlcv_dict["low"][actual_bot_idx] - offset_dist, mode='markers', marker=dict(symbol='star', color='yellow', size=12, line=dict(width=1, color='black')), name='Actual Bottoms'), row=1, col=1)
 
-    # 3. Model Signals
+    # 3. Model Signals & Regime-Conditioned Execution
+    dynamic_buy_threshold = args.buy_threshold + ((1.0 - prob_bull) * args.bear_penalty)
+       
     fire_top_idx = np.where(prob_top >= args.sell_threshold)[0]
-    fire_bot_idx = np.where(prob_bot >= args.buy_threshold)[0]
+    fire_bot_idx = np.where(prob_bot >= dynamic_buy_threshold)[0]
 
     fig.add_trace(go.Scatter(x=fire_bot_idx, y=ohlcv_dict["low"][fire_bot_idx] - (offset_dist * 2), mode='markers', marker=dict(symbol='triangle-up', color='cyan', size=14, line=dict(width=1, color='black')), name='Model BUY Signal', text=[hover_texts[i] for i in fire_bot_idx], hovertemplate="%{text}<extra></extra>"), row=1, col=1)
     fig.add_trace(go.Scatter(x=fire_top_idx, y=ohlcv_dict["high"][fire_top_idx] + (offset_dist * 2), mode='markers', marker=dict(symbol='triangle-down', color='red', size=14, line=dict(width=1, color='black')), name='Model SELL Signal', text=[hover_texts[i] for i in fire_top_idx], hovertemplate="%{text}<extra></extra>"), row=1, col=1)
@@ -306,10 +367,102 @@ def main():
     fig.add_hline(y=args.sell_threshold, line_dash="dash", line_color="white", row=2, col=1, opacity=0.5)
 
     fig.add_trace(go.Scatter(x=x_indices, y=prob_bot, mode='lines', name='Prob: Bottom', line=dict(color='cyan', width=1.5), text=hover_texts, hovertemplate="%{text}<extra></extra>"), row=3, col=1)
-    fig.add_hline(y=args.buy_threshold, line_dash="dash", line_color="white", row=3, col=1, opacity=0.5)
+    
+    # --- UPGRADED: Plot the dynamic threshold ---
+    fig.add_trace(go.Scatter(x=x_indices, y=dynamic_buy_threshold, mode='lines', name='Dynamic Buy Threshold', line=dict(color='white', width=1, dash='dash'), opacity=0.5), row=3, col=1)
 
-    title_str = f"HMoE2 Engine | SELL Threshold: {args.sell_threshold:.2f} | BUY Threshold: {args.buy_threshold:.2f}"
-    fig.update_layout(title=title_str, template="plotly_dark", hovermode="closest", height=1000, xaxis_rangeslider_visible=False)
+    # --- Bull Market Probability Oscillator ---
+    fig.add_trace(go.Scatter(x=x_indices, y=prob_bull, mode='lines', name='Prob: Bull Market', line=dict(color='green', width=1.5), fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.1)', text=hover_texts, hovertemplate="%{text}<extra></extra>"), row=4, col=1)
+    
+    # Optional: Plot the "ground truth" bull market as a background fill on row 4
+    if task_bull_config and getattr(task_bull_config, 'label_target', None):
+        bull_label_key = task_bull_config.label_target.name
+        if bull_label_key in raw_data:
+            actual_bull_signal = np.array(raw_data[bull_label_key])
+            fig.add_trace(go.Scatter(x=x_indices, y=actual_bull_signal, mode='lines', name='Actual Bull Regime', line=dict(color='white', width=1, dash='dot'), opacity=0.3), row=4, col=1)
+
+    # =========================================================================
+    # 5. SANITIZED INPUT FEATURE PANELS
+    # =========================================================================
+    for i, f_name in enumerate(input_feature_names):
+        row_idx = 5 + i
+        if f_name in feature_to_idx:
+            f_data = master_np[:, feature_to_idx[f_name]]
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=x_indices, 
+                    y=f_data, 
+                    mode='lines', 
+                    name=f_name, 
+                    line=dict(width=1),
+                    hovertemplate="%{y:.4f}<extra></extra>"
+                ), 
+                row=row_idx, 
+                col=1
+            )
+            
+            # --- ADDED: Overlay the Ground Truth Stars on the Input Features ---
+            if len(actual_top_idx) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=actual_top_idx, 
+                        y=f_data[actual_top_idx], 
+                        mode='markers', 
+                        marker=dict(symbol='star', color='orange', size=8, line=dict(width=1, color='black')), 
+                        showlegend=False, 
+                        name='Actual Top Value',
+                        hovertemplate="Top Marker Value: %{y:.4f}<extra></extra>"
+                    ), 
+                    row=row_idx, 
+                    col=1
+                )
+                
+            if len(actual_bot_idx) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=actual_bot_idx, 
+                        y=f_data[actual_bot_idx], 
+                        mode='markers', 
+                        marker=dict(symbol='star', color='yellow', size=8, line=dict(width=1, color='black')), 
+                        showlegend=False, 
+                        name='Actual Bot Value',
+                        hovertemplate="Bot Marker Value: %{y:.4f}<extra></extra>"
+                    ), 
+                    row=row_idx, 
+                    col=1
+                )
+            
+            # Add a subtle zero-line
+            fig.add_hline(y=0, line_dash="dot", line_color="white", row=row_idx, col=1, opacity=0.2)
+            
+            # --- In-chart Labeling ---
+            fig.add_annotation(
+                x=0.01, 
+                y=0.95, 
+                xref=f"x{row_idx} domain", 
+                yref=f"y{row_idx} domain",
+                text=f"<b>{f_name}</b>", 
+                showarrow=False, 
+                font=dict(color="white", size=11),
+                bgcolor="rgba(0, 0, 0, 0.6)", 
+                borderpad=3,
+                xanchor="left", 
+                yanchor="top"
+            )
+
+    # Dynamically scale the UI height based on the number of features attached
+    calc_height = 1000 + (200 * num_indicators)
+    title_str = f"HMoE2 Engine | SELL: {args.sell_threshold:.2f} | BASE BUY: {args.buy_threshold:.2f} | MAX BEAR PENALTY: +{args.bear_penalty:.2f}"
+    
+    fig.update_layout(
+        title=title_str, 
+        template="plotly_dark", 
+        hovermode="x unified", 
+        height=calc_height, 
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=40, r=40, t=60, b=40)
+    )
     fig.show()
 
 if __name__ == "__main__":

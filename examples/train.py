@@ -1,6 +1,7 @@
 import time
 import requests
 import torch
+import argparse  # <-- ADDED
 from typing import List, Dict
 from datetime import datetime, timezone
 
@@ -54,13 +55,23 @@ def extract_required_features(root_router: HmoeNode, task_list: list) -> List[Hm
     return features
 
 def main():
-    print("=== 1. Architectural Initialization ===")
-    root_router = HmoeNode.from_yaml("config.yaml")
+    # =========================================================================
+    # ARGUMENT PARSER
+    # =========================================================================
+    parser = argparse.ArgumentParser(description="Train HMoE2 Model")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the YAML configuration file.")
+    # You can easily add more flags here later (e.g., --symbol, --epochs)
+    args = parser.parse_args()
+
+    print(f"=== 1. Architectural Initialization ===")
+    print(f"[*] Loading config from: {args.config}")
+    
+    # Load from the parsed argument instead of hardcoded string
+    root_router = HmoeNode.from_yaml(args.config)
 
     global_tasks = {}
     root_router._gather_tasks(global_tasks)
     task_list = list(global_tasks.values())
-
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -68,7 +79,6 @@ def main():
     loss_engine = HmoeLossEngine(tasks=task_list).to(device)
     optimizer = torch.optim.Adam(root_router.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    
     # Extract strict objects
     required_feature_objects = extract_required_features(root_router, task_list)
     # Derive string names strictly for the API request payload
@@ -76,7 +86,7 @@ def main():
     
     print("\n=== 2. Market Data Ingestion ===")
     raw_train_data = fetch_raw_api_data(
-        symbol="GBP-USD", timeframe="4h", fields=required_feature_names, start_date="2010-01-01", end_date="2023-12-31"
+        symbol="GBP-USD", timeframe="4h", fields=required_feature_names, start_date="2014-01-01", end_date="2023-12-31"
     )
     raw_val_data = fetch_raw_api_data(
         symbol="GBP-USD", timeframe="4h", fields=required_feature_names, start_date="2024-01-01", end_date="2025-12-31"
@@ -119,7 +129,7 @@ def main():
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         epochs=10000,
-        patience=1000
+        patience=100
     )
 
 if __name__ == "__main__":
