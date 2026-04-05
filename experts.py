@@ -10,7 +10,7 @@ from hmoe2.nodes import HmoeNode
 from hmoe2.backends import (
     LinearBackend, TcnBackend, GruBackend,
     CausalTransformerBackend, GatedResidualBackend, LstmBackend,
-    RnnBackend
+    RnnBackend, SignatureBackend, MotifsBackend
 )
 
 
@@ -32,7 +32,7 @@ class HmoeExpert(HmoeNode):
         task_heads (nn.ModuleDict): Mapping of task names to task-specific heads.
     """
 
-    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32):
+    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32, dilations: List[int] = None):
         """Initializes the HmoeExpert.
 
         Args:
@@ -58,11 +58,17 @@ class HmoeExpert(HmoeNode):
         # Store hidden dimension size for backend and heads
         self.hidden_dim = hidden_dim
 
+        # Store dilations for TCN backends
+        self.dilations = dilations
+
         # Dynamically instantiate the appropriate backend based on configuration
         if self.backend_type == "LINEAR":
             self.core = LinearBackend(self.input_dim, self.hidden_dim)
         elif self.backend_type == "TCN":
-            self.core = TcnBackend(self.input_dim, self.hidden_dim)
+            if self.dilations is not None:
+                self.core = TcnBackend(self.input_dim, self.hidden_dim, dilations=self.dilations)
+            else:
+                self.core = TcnBackend(self.input_dim, self.hidden_dim)
         elif self.backend_type == "GRU":
             self.core = GruBackend(self.input_dim, self.hidden_dim)
         elif self.backend_type == "LSTM":
@@ -73,6 +79,20 @@ class HmoeExpert(HmoeNode):
             self.core = CausalTransformerBackend(self.input_dim, self.hidden_dim)
         elif self.backend_type in ["VANILLA_RNN", "RNN"]:
             self.core = RnnBackend(self.input_dim, self.hidden_dim)
+        # Experimental (TODO: add parameterization)
+        elif self.backend_type in ["SIGNATURE", "SIGNATORY", "ROUGH_PATH", "RP"]:
+            self.core = SignatureBackend(
+                input_dim=self.input_dim, 
+                hidden_dim=self.hidden_dim, 
+                depth=2
+            )
+        elif self.backend_type in ["MATRIX_PROFILE", "MOTIF", "MP"]:
+            self.core = MotifsBackend(
+                self.input_dim, 
+                self.hidden_dim, 
+                num_motifs=8, 
+                motif_length=12
+            )
         else:
             # Raise an error if an unknown backend type is provided
             raise ValueError(f"Unknown backend type: {self.backend_type} in expert {name}")
@@ -98,7 +118,7 @@ class HmoeExpert(HmoeNode):
             dict: Serialized representation of the expert node.
         """
         # Construct a dictionary capturing all relevant configuration fields
-        return {
+        config_dict = {
             "name": self.name,
             "type": "EXPERT",
             "backend": self.backend_type,
@@ -106,6 +126,10 @@ class HmoeExpert(HmoeNode):
             "allowed_tasks": [t.name for t in self.allowed_tasks],
             "features": [f.serialize() for f in self.features]
         }
+        if self.dilations is not None and self.backend_type == "TCN":
+            config_dict["dilations"] = self.dilations
+
+        return config_dict
 
     def link_tasks(self, global_tasks: List[HmoeTask]) -> None:
         """Initializes task-specific heads based on assigned tasks.

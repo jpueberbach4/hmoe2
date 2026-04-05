@@ -1,0 +1,65 @@
+# ==============================================================================
+# GLOBAL TASK DEFINITIONS
+# ==============================================================================
+tasks:
+  - name: task_top
+    num_classes: 2
+    loss_weight: 1.0
+    pos_weight: 15.0
+    enabled: false
+    label_target: "example-pivot-finder-close-6_46_tops_1_4"
+
+  - name: task_bot
+    num_classes: 2
+    loss_weight: 1.0
+    pos_weight: 1.0
+    label_target: "example-pivot-finder-close-6_46_bottoms_1_4"
+
+  # The Macro Regime Task
+  - name: task_bull
+    num_classes: 2
+    enabled: false
+    loss_weight: 1.0
+    pos_weight: 1.0  # Kept at 1.0 because bull markets are roughly 50% of the data, not rare spikes
+    label_target:
+      name: "regime-labeler-gbpusd"
+
+# ==============================================================================
+# MIXTURE OF EXPERTS TOPOLOGY MAP 
+# ==============================================================================
+tree:
+  name: root_router
+  type: ROUTER
+  gate_type: PASS_THROUGH
+  children:
+
+    # ==========================================
+    # BRANCH 2: MICRO BOTTOM DETECTION
+    # ==========================================
+    - name: detect_bottoms
+      type: ROUTER
+      gate_type: PASS_THROUGH
+      noise_std: 0.0
+      children:
+        # 1. The Shape Detector (Blind to Altitude)
+        - name: absolute_bottom_expert_mp
+          type: EXPERT
+          backend: SIGNATORY
+          hidden_dim: 32
+          depth: 2
+          features:
+            - name: "rsi-sma-normalized_42_1"
+            - name: "zscore_50"
+          allowed_tasks: ["task_bot"]
+
+        # 2. The Altitude Detector (Blind to Shape)
+        - name: absolute_bottom_expert_tcn
+          type: EXPERT
+          backend: TCN
+          hidden_dim: 32
+          features:
+            - name: "rsi-sma-normalized_42_1"
+            - name: "zscore_50"
+          allowed_tasks: ["task_bot"]
+    
+

@@ -208,6 +208,7 @@ class HmoeNode(nn.Module, ABC):
             # Extract backend configuration parameters
             backend_val = config.get('backend', 'LINEAR')
             hidden_dim_val = config.get('hidden_dim', 32)
+            dilations_val = config.get('dilations', None)
 
             # Instantiate expert node
             expert = HmoeExpert(
@@ -215,7 +216,8 @@ class HmoeNode(nn.Module, ABC):
                 tasks=expert_tasks,
                 features=parsed_features,
                 backend=backend_val,
-                hidden_dim=hidden_dim_val
+                hidden_dim=hidden_dim_val,
+                dilations=dilations_val
             )
 
             # Link task heads to expert

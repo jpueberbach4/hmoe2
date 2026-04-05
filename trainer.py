@@ -18,7 +18,7 @@ class HmoeTrainer:
         optimizer: torch.optim.Optimizer, 
         device: torch.device,
         checkpoint_dir: str = "checkpoints",
-        scheduler_patience: int = 5 # THE FIX: Lowered default to fire before early stopping
+        scheduler_patience: int = 25 # THE FIX: Lowered default to fire before early stopping
     ):
         self.model = model.to(device)
         self.loss_engine = loss_engine.to(device)
@@ -31,7 +31,9 @@ class HmoeTrainer:
             optimizer, 
             mode='min', 
             factor=0.5, 
-            patience=scheduler_patience 
+            patience=scheduler_patience ,
+            threshold=1e-4,    # Respect improvements as small as 0.0001
+            min_lr=1e-5        # NEVER drop the LR below this hard floor
         )
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
