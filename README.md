@@ -74,6 +74,8 @@ Geometric Regime detection (no lookahead)
 
 The above example is included in the support directory (show2.py). You will need to provide for the data yourself. If you still have the bp.markets.ingest project, you can use that project for this project.
 
+Note: bp.markets.ingest will return as a clean library.
+
 ## License
 
 This project is licensed under the MIT License.
