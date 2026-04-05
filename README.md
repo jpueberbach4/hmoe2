@@ -41,7 +41,7 @@ pip install torch pyyaml requests
 
 (Note: For GPU acceleration, ensure you install a CUDA-compatible version of PyTorch).
 
-See examples directory.
+See support directory.
 
 ## Matrix Profiles vs. Rough Path Signatures
 When configuring your experts, it is critical to understand the mathematical distinction between the MOTIFS (Matrix Profile) and SIGNATURE (Rough Path) backends.
@@ -71,6 +71,8 @@ A screenshot says more than a thousand words. This is what you can build with th
 Geometric Regime detection (no lookahead)
 
 ![Example-1](images/example-regime.png)
+
+The above example is included in the support directory (show2.py). You will need to provide for the data yourself. If you still have the bp.markets.ingest project, you can use that project for this project.
 
 ## License
 
