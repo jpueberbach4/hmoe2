@@ -7,13 +7,13 @@ tasks:
     loss_weight: 1.0
     pos_weight: 15.0
     enabled: false
-    label_target: "example-pivot-finder-close-6_46_tops_1_4"
+    label_target: "example-pivot-finder-close-6_80_tops_3_3"
 
   - name: task_bot
     num_classes: 2
     loss_weight: 1.0
-    pos_weight: 1.0
-    label_target: "example-pivot-finder-close-6_46_bottoms_1_4"
+    pos_weight: 3.5
+    label_target: "example-pivot-finder-close-6_80_bottoms_3_3"
 
   # The Macro Regime Task
   - name: task_bull
@@ -48,8 +48,12 @@ tree:
           hidden_dim: 32
           depth: 2
           features:
-            - name: "rsi-sma-normalized_42_1"
-            - name: "zscore_50"
+            - name: "forward-panel_4h_rsi_14_3"
+              normalize: true
+            - name: "forward-panel_8h_rsi_14_3"
+              normalize: true
+            - name: "forward-panel_1d_rsi_14_3"
+              normalize: true
           allowed_tasks: ["task_bot"]
 
         # 2. The Altitude Detector (Blind to Shape)
@@ -58,8 +62,7 @@ tree:
           backend: TCN
           hidden_dim: 32
           features:
-            - name: "rsi-sma-normalized_42_1"
-            - name: "zscore_50"
+            - name: "rsi-sma-normalized_40_3"
           allowed_tasks: ["task_bot"]
     
 

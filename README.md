@@ -64,6 +64,14 @@ A Matrix Profile is vulnerable to time-warping (a crash taking 5 days looks comp
 
 A Signature measures pure geometry, outputting a consistent state "barcode" regardless of the market's velocity. It translates the slow, grinding chop of a multi-month downtrend and the sharp violence of a flash-crash into stable, recognizable macro-regimes for the downstream task heads.
 
+## Examples
+
+A screenshot says more than a thousand words. This is what you can build with this.
+
+Geometric Regime detection (no lookahead)
+
+![Example-1](images/example-regime.png)
+
 ## License
 
 This project is licensed under the MIT License.
