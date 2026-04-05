@@ -65,23 +65,41 @@ class SignatureBackend(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Applies streaming signature transform and projection.
+        """Processes the input path through a Rolling Window Signature transform.
 
         Args:
-            x (torch.Tensor): Input tensor of shape
-                (batch_size, sequence_length, input_dim).
+            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
 
         Returns:
-            torch.Tensor: Output tensor of shape
-                (batch_size, sequence_length, hidden_dim).
+            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
         """
-        # Compute streaming signature (per timestep, causal)
-        sig_path = signatory.signature(
-            x,
-            depth=self.depth,
-            stream=True,
-            basepoint=True
-        )
-
-        # Project to hidden space
+        b, s, c = x.size()
+        
+        # The lookback window: Calculate the geometry of the last 60 candles.
+        # (You can move this to __init__ if you want it configurable)
+        window_length = 40
+        
+        # 1. Strict Causal Padding
+        # Pad the left side so the first 60 candles don't look into the future
+        x_t = x.transpose(1, 2)
+        x_padded = F.pad(x_t, (window_length - 1, 0), mode="replicate")
+        
+        # 2. Extract Sliding Windows
+        # Output shape: [Batch, Channels, Sequence, Window]
+        windows = x_padded.unfold(dimension=2, size=window_length, step=1)
+        
+        # 3. Reshape for the Signatory Engine
+        # Signatory expects [Batch, Seq, Channels]. 
+        # We flatten our batch and sequence dimensions to process all windows in parallel.
+        windows = windows.permute(0, 2, 3, 1).contiguous() # [Batch, Seq, Window, Channels]
+        flat_windows = windows.view(b * s, window_length, c)
+        
+        # 4. Calculate localized Signatures!
+        # Notice stream=True is REMOVED. We are calculating the fixed signature 
+        # of the 60-candle window, not an infinite stream.
+        sig_path = signatory.signature(flat_windows, depth=self.depth, basepoint=True)
+        
+        # 5. Reshape back to expected output and project
+        sig_path = sig_path.view(b, s, -1)
+        
         return self.net(sig_path)
