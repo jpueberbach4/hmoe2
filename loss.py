@@ -9,164 +9,144 @@ from hmoe2.tensor import HmoeTensor, HmoeOutput
 
 @dataclass(frozen=True)
 class HmoeLossResult:
-    """Container for loss computation results.
-
-    This data transfer object (DTO) encapsulates the total differentiable
-    loss used for backpropagation, along with per-task scalar metrics for logging.
+    """Container for loss computation outputs.
 
     Attributes:
-        total_loss (torch.Tensor): Combined loss used for optimization.
-        task_metrics (Dict[str, float]): Dictionary of task-specific loss values.
+        total_loss (torch.Tensor):
+            Final scalar loss combining task losses and routing penalty.
+        task_metrics (Dict[str, float]):
+            Per-task loss values (detached scalars for logging/monitoring).
     """
     total_loss: torch.Tensor
     task_metrics: Dict[str, float]
 
 
 class HmoeLossEngine(nn.Module):
-    """Global loss computation engine for HMoE models.
+    """Loss computation engine for Hierarchical Mixture-of-Experts (HMoE).
 
-    This module computes task-specific losses using a modified focal loss
-    formulation inspired by CenterNet for continuous Gaussian heatmap targets.
-    It also incorporates an optional routing penalty.
+    This module aggregates task-specific classification losses and combines
+    them with a routing penalty term. Each task contributes independently
+    based on its configuration (e.g., weight, positive class scaling).
 
     Attributes:
-        tasks (List[HmoeTask]): List of task configurations.
-        routing_penalty_weight (float): Weight applied to routing loss penalty.
+        tasks (List[HmoeTask]):
+            List of task definitions containing metadata such as name,
+            label target, and weighting parameters.
+        routing_penalty_weight (float):
+            Scaling factor applied to the routing loss component.
     """
 
     def __init__(self, tasks: List[HmoeTask], routing_penalty_weight: float = 0.05):
-        """Initializes the HmoeLossEngine.
+        """Initializes the loss engine.
 
         Args:
-            tasks (List[HmoeTask]): List of task configurations.
-            routing_penalty_weight (float): Scaling factor for routing penalty.
+            tasks (List[HmoeTask]):
+                List of task configurations.
+            routing_penalty_weight (float, optional):
+                Weight applied to the routing penalty term. Defaults to 0.05.
         """
         super().__init__()
-
-        # Store task configurations
         self.tasks = tasks
-
-        # Store routing penalty weight
         self.routing_penalty_weight = routing_penalty_weight
 
     def forward(self, predictions: HmoeOutput, master_tensor: HmoeTensor) -> HmoeLossResult:
-        """Computes the total loss and task-specific metrics.
+        """Computes the combined loss across all active tasks.
+
+        For each task:
+        - Extract logits and targets
+        - Apply binary-safe preprocessing
+        - Compute log-softmax probabilities
+        - Apply masked positive/negative loss
+        - Normalize and weight the loss
+
+        Finally, adds the routing penalty to produce the total loss.
 
         Args:
-            predictions (HmoeOutput): Model predictions containing task logits and routing loss.
-            master_tensor (HmoeTensor): Ground truth tensor containing all labels.
+            predictions (HmoeOutput):
+                Model output containing task logits and routing loss.
+            master_tensor (HmoeTensor):
+                Input tensor containing ground-truth labels.
 
         Returns:
-            HmoeLossResult: Structured result containing total loss and metrics.
+            HmoeLossResult:
+                Object containing total loss and per-task metrics.
 
         Raises:
-            RuntimeError: If no valid task predictions are available.
+            RuntimeError:
+                If no task predictions are available or no valid tasks are processed.
         """
-        # Ensure that predictions contain task outputs
+        # Ensure model returned at least one task prediction
         if not predictions.task_logits:
-            raise RuntimeError(
-                "CRITICAL ERROR: The forward pass returned zero task predictions. "
-                "The dynamic task heads were not linked correctly."
-            )
+            raise RuntimeError("CRITICAL ERROR: Zero task predictions returned.")
 
-        # Determine device from prediction tensors
+        # Infer device from predictions
         device = next(iter(predictions.task_logits.values())).to_tensor().device
 
-        # Initialize metric logging and list of active losses
+        # Store per-task scalar metrics for logging
         metrics_log: Dict[str, float] = {}
+
+        # Accumulate valid task losses
         active_losses = []
 
-        # Iterate over all configured tasks
         for task in self.tasks:
-            # Skip disabled tasks
-            if not getattr(task, 'enabled', True):
+            # Skip disabled or improperly configured tasks
+            if not getattr(task, 'enabled', True) or task.label_target is None or task.name not in predictions.task_logits:
                 continue
 
-            # Skip tasks without valid label targets or predictions
-            if task.label_target is None or task.name not in predictions.task_logits:
-                continue
-
-            # Extract logits tensor for the current task
+            # Extract logits and corresponding targets
             logits = predictions.task_logits[task.name].to_tensor()
+            targets = master_tensor.get_subset([task.label_target]).to_tensor()
 
-            # Extract corresponding ground truth labels as a DTO subset
-            label_dto = master_tensor.get_subset([task.label_target])
-
-            # Convert label DTO into raw tensor
-            targets = label_dto.to_tensor()
-
-            # Ensure target values are positive and within probability bounds
+            # Ensure targets are strictly non-negative and within [0, 1]
             targets = torch.abs(targets)
-            targets = torch.clamp(targets, min=0.0, max=1.0)
+            y_clamped = torch.clamp(targets, min=0.0, max=1.0)
 
-            # Extract shape information
             batch_size, seq_len, num_classes = logits.shape
 
-            # Flatten logits and targets for vectorized computation
+            # Flatten tensors for vectorized loss computation
             flat_logits = logits.view(-1, num_classes)
-            y = targets.view(-1)
+            y = y_clamped.view(-1)
 
-            # Compute class probabilities using softmax
-            probs = F.softmax(flat_logits, dim=-1)
+            # Compute log-probabilities (numerically stable)
+            log_probs = F.log_softmax(flat_logits, dim=-1)
+            log_p_pos = log_probs[:, 1]
+            log_p_neg = log_probs[:, 0]
 
-            # Extract probability of positive class (index 1)
-            p = probs[:, 1]
-
-            # Define focal loss hyperparameters
-            alpha = 0.0
-            beta = 1.0
-
-            # Create masks to separate peak targets from non-peak regions
+            # Create masks for positive and negative samples
             pos_mask = (y >= 0.999).float()
             neg_mask = (y < 0.999).float()
 
-            # Compute loss for positive (peak) locations
-            pos_loss = -torch.log(p + 1e-8) * torch.pow(1.0 - p, alpha) * pos_mask
+            # Compute per-sample losses
+            pos_loss = -log_p_pos * pos_mask
+            neg_loss = -log_p_neg * (1.0 - y) * neg_mask
 
-            # Compute loss for negative (non-peak) locations with slope weighting
-            neg_loss = (
-                -torch.log(1.0 - p + 1e-8)
-                * torch.pow(p, alpha)
-                * torch.pow(1.0 - y, beta)
-                * neg_mask
-            )
-
-            # Combine positive and negative losses with task-specific weighting
+            # Combine losses with task-specific positive weighting
             raw_loss = (pos_loss * task.pos_weight) + neg_loss
 
-            # Count number of positive peaks and prevent division by zero
+            # Normalize by number of positive samples (avoid division by zero)
             num_pos = pos_mask.sum().clamp(min=1.0)
-
-            # Normalize loss by number of peaks instead of total elements
             raw_loss = raw_loss.sum() / num_pos
 
-            # Apply task-specific loss weight
+            # Apply task-level weighting
             weighted_loss = raw_loss * task.loss_weight
 
-            # Store active loss and logging metric
             active_losses.append(weighted_loss)
             metrics_log[task.name] = weighted_loss.item()
 
-        # Ensure at least one valid task contributed to the loss
+        # Ensure at least one task contributed to the loss
         if not active_losses:
-            raise RuntimeError("Loss calculation failed: No valid tasks were processed.")
+            raise RuntimeError("Loss calculation failed: No valid tasks processed.")
 
-        # Aggregate all task losses into a single scalar
+        # Aggregate all task losses
         task_loss_total = torch.stack(active_losses).sum()
 
-        # Compute routing penalty scaled by configured weight
-        final_routing_loss = (
-            predictions.routing_loss.to_tensor().to(device)
-            * self.routing_penalty_weight
-        )
-
-        # Combine task loss and routing penalty
+        # Add routing penalty (scaled)
+        final_routing_loss = predictions.routing_loss.to_tensor().to(device) * self.routing_penalty_weight
         total_combined_loss = task_loss_total + final_routing_loss
 
-        # Log routing penalty for monitoring
+        # Log routing penalty separately
         metrics_log['routing_penalty'] = final_routing_loss.item()
 
-        # Return structured loss result
         return HmoeLossResult(
             total_loss=total_combined_loss,
             task_metrics=metrics_log

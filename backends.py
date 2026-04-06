@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+# Map signature as a backend (so it can get imported from backends)
+from hmoe2.signatures import SignatureBackend
+from hmoe2.motifs import MotifsBackend
 
 class StrictCausalConv1d(nn.Module):
     """Implements a strictly causal 1D convolution layer.
