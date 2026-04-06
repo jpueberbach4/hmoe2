@@ -1,28 +1,32 @@
 # ==============================================================================
 # GLOBAL TASK DEFINITIONS
 # ==============================================================================
+# This is a simple example (learns based on higher TF RSI for trend detection)
 tasks:
-  - name: task_top
+  # The regime task defines whether we should sell tops or buy bottoms
+  # When in bull-mode: buy bottoms. When in sell-mode: sell tops.
+  - name: task_regime
     num_classes: 2
-    loss_weight: 1.0
-    pos_weight: 15.0
+    pos_weight: 3.0
+    # Check charts. Label bullmarket-ranges with 1.
+    # Chop is hard to detect.
+    label_target: "regime-labeler-gbpusd"
+
+  # This learns and identifies potential tops
+  - name: task_tops
+    num_classes: 2
+    pos_weight: 10.0
     enabled: false
+    # This label marks pivots for tops
     label_target: "example-pivot-finder-close-6_80_tops_3_3"
 
-  - name: task_bot
+  # This learns and identifies potential bottoms
+  - name: task_bottoms
     num_classes: 2
-    loss_weight: 1.0
-    pos_weight: 3.5
-    label_target: "example-pivot-finder-close-6_80_bottoms_3_3"
-
-  # The Macro Regime Task
-  - name: task_bull
-    num_classes: 2
+    pos_weight: 10.0
     enabled: false
-    loss_weight: 1.0
-    pos_weight: 1.0  # Kept at 1.0 because bull markets are roughly 50% of the data, not rare spikes
-    label_target:
-      name: "regime-labeler-gbpusd"
+    # This label marks pivots for bottoms
+    label_target: "example-pivot-finder-close-6_80_bottoms_3_3"
 
 # ==============================================================================
 # MIXTURE OF EXPERTS TOPOLOGY MAP 
@@ -34,35 +38,29 @@ tree:
   children:
 
     # ==========================================
-    # BRANCH 2: MICRO BOTTOM DETECTION
+    # BRANCH 1: MACRO REGIME
     # ==========================================
-    - name: detect_bottoms
+    - name: detect_regime
       type: ROUTER
       gate_type: PASS_THROUGH
       noise_std: 0.0
       children:
         # 1. The Shape Detector (Blind to Altitude)
-        - name: absolute_bottom_expert_mp
+        - name: regime_expert
           type: EXPERT
           backend: SIGNATORY
           hidden_dim: 32
-          depth: 2
+          dropout: 0.2 # Dropout is to force better generalization (gets disabled during eval)
+          depth: 3
+          window_length: 80
           features:
-            - name: "forward-panel_4h_rsi_14_3"
-              normalize: true
-            - name: "forward-panel_8h_rsi_14_3"
-              normalize: true
-            - name: "forward-panel_1d_rsi_14_3"
-              normalize: true
-          allowed_tasks: ["task_bot"]
+            # Have it learn to match the bull-labeller with daily and weekly RSI.
+            - name: "forward-panel_1d_rsi_14_10"
+              normalize: 1
+            - name: "forward-panel_1W_rsi_14_10"
+              normalize: 1
+          allowed_tasks: ["task_regime"]
 
-        # 2. The Altitude Detector (Blind to Shape)
-        - name: absolute_bottom_expert_tcn
-          type: EXPERT
-          backend: TCN
-          hidden_dim: 32
-          features:
-            - name: "rsi-sma-normalized_40_3"
-          allowed_tasks: ["task_bot"]
+    
     
 

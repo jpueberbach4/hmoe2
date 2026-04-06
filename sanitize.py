@@ -48,7 +48,7 @@ class HmoeSanitizer:
             raw_tensor (HmoeTensor): Input tensor with associated feature indices.
             allowed_features (List[HmoeFeature]): Whitelist of permitted features.
             drop_nan_columns (bool): Whether to remove columns containing NaNs.
-            rolling_window (int): Window size for rolling normalization.
+            rolling_window (int): Window size for rolling normalization (Type 2).
             verbose (bool): Whether to output diagnostic logs.
 
         Returns:
@@ -82,9 +82,10 @@ class HmoeSanitizer:
                     if hasattr(allowed_obj, 'clamp') and allowed_obj.clamp is not None:
                         active_clamps[col_name] = allowed_obj.clamp
 
-                    # Capture normalization flag if enabled
-                    if hasattr(allowed_obj, 'normalize') and allowed_obj.normalize is True:
-                        active_norms[col_name] = True
+                    # Capture normalization flag/type if enabled
+                    if hasattr(allowed_obj, 'normalize') and allowed_obj.normalize:
+                        # Cast to int so True -> 1, False -> 0, or explicit 1 / 2 is maintained
+                        active_norms[col_name] = int(allowed_obj.normalize)
 
                     break
 
@@ -96,9 +97,9 @@ class HmoeSanitizer:
                 if col_name in active_clamps and hasattr(feature, 'clamp'):
                     feature.clamp = active_clamps[col_name]
 
-                # Propagate normalization flag to feature instance
+                # Propagate normalization integer to feature instance
                 if col_name in active_norms and hasattr(feature, 'normalize'):
-                    feature.normalize = True
+                    feature.normalize = active_norms[col_name]
 
                 # Add feature to retained indices
                 keep_indices.append(feature)
@@ -131,13 +132,18 @@ class HmoeSanitizer:
 
         # Create count tensor for expanding-to-rolling window normalization
         counts = torch.arange(1, seq_len + 1, device=clean_data.device).float().unsqueeze(0)
-
-        # Clamp counts to enforce fixed rolling window size after threshold
         counts_clamped = torch.clamp(counts, max=rolling_window)
 
-        # Apply rolling normalization for features flagged for normalization
+        # Apply normalization logic based on integer flag
         for col_idx, feature in enumerate(current_indices):
-            if active_norms.get(feature.name, False):
+            norm_type = active_norms.get(feature.name, 0)
+            
+            # TYPE 1: Static Bounded Scale (e.g., / 100 for RSI)
+            if norm_type == 1:
+                clean_data[:, :, col_idx] = clean_data[:, :, col_idx] / 100.0
+
+            # TYPE 2: Dynamic Rolling Z-Score
+            elif norm_type == 2:
                 feature_slice = clean_data[:, :, col_idx]
 
                 # Compute cumulative sums for efficient rolling calculations
@@ -198,17 +204,20 @@ class HmoeSanitizer:
                 max_val = col_data.max().item()
 
                 alerts: List[str] = []
+                norm_type = active_norms.get(feature.name, 0)
 
-                # Flag normalized features
-                if active_norms.get(feature.name, False):
-                    alerts.append("Normalized")
+                # Flag normalized features with their specific type
+                if norm_type == 1:
+                    alerts.append("Static Scaled (/100)")
+                elif norm_type == 2:
+                    alerts.append("Rolling Norm (Z-Score)")
 
                 # Detect statistical outliers
                 if (max_val > mean_val + 3 * std_val) or (min_val < mean_val - 3 * std_val):
                     alerts.append("Has Outliers")
 
-                # Suggest normalization if distribution is unstable
-                if not active_norms.get(feature.name, False) and (abs(mean_val) > 0.5 or std_val > 3.0):
+                # Suggest normalization if distribution is unstable (only if currently unnormalized)
+                if norm_type == 0 and (abs(mean_val) > 0.5 or std_val > 3.0):
                     alerts.append("Needs Norm")
 
                 # Suggest clamping if values exceed reasonable bounds
