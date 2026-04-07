@@ -29,7 +29,7 @@ def parse_feature(f_data: Any) -> HmoeFeature:
     # Extract feature properties from dictionary input
     f_name = f_data.get('name')
     f_clamp = f_data.get('clamp', 0.0)
-    f_norm = f_data.get('normalize', False)
+    f_norm = f_data.get('normalize', 0)
 
     # Determine if feature should be treated as a cheat feature
     if f_data.get('cheat', False):
@@ -208,7 +208,6 @@ class HmoeNode(nn.Module, ABC):
             # Extract backend configuration parameters
             backend_val = config.get('backend', 'LINEAR')
             hidden_dim_val = config.get('hidden_dim', 32)
-            dilations_val = config.get('dilations', None)
 
             # Instantiate expert node
             expert = HmoeExpert(
@@ -217,7 +216,7 @@ class HmoeNode(nn.Module, ABC):
                 features=parsed_features,
                 backend=backend_val,
                 hidden_dim=hidden_dim_val,
-                dilations=dilations_val
+                config=config
             )
 
             # Link task heads to expert

@@ -112,19 +112,17 @@ class HmoeLossEngine(nn.Module):
             log_p_pos = log_probs[:, 1]
             log_p_neg = log_probs[:, 0]
 
-            # Create masks for positive and negative samples
-            pos_mask = (y >= 0.999).float()
-            neg_mask = (y < 0.999).float()
-
-            # Compute per-sample losses
-            pos_loss = -log_p_pos * pos_mask
-            neg_loss = -log_p_neg * (1.0 - y) * neg_mask
+            # REPLACED: Use continuous soft-targets instead of binary masks
+            # If y = 0.8, it heavily penalizes missing the pos class (80%), 
+            # and slightly penalizes missing the neg class (20%).
+            pos_loss = -log_p_pos * y
+            neg_loss = -log_p_neg * (1.0 - y)
 
             # Combine losses with task-specific positive weighting
             raw_loss = (pos_loss * task.pos_weight) + neg_loss
 
-            # Normalize by number of positive samples (avoid division by zero)
-            num_pos = pos_mask.sum().clamp(min=1.0)
+            # Normalize by the sum of target values (to handle soft totals)
+            num_pos = y.sum().clamp(min=1.0)
             raw_loss = raw_loss.sum() / num_pos
 
             # Apply task-level weighting

@@ -76,6 +76,11 @@ The above example is included in the support directory (show2.py). You will need
 
 Note: bp.markets.ingest will return as a clean library.
 
+Note: The Relative Strength Index (RSI) is one of the most popular technical indicators, but many traders and analysts consider it not powerful—or even useless—when used in isolation. The primary reason for this perspective is that the RSI is a momentum oscillator, not a trend-predicting tool, and it frequently produces false signals in trending markets.
+
+What this project proves is that RSI, when applied properly CAN be used for both trend direction and peak/bottom detection within that trend. The provided examples demonstrate geometric regime detection and pivot finding using multi-timeframe RSI. Turning these signals into consistently profitable strategies requires additional work on risk management, position sizing, execution logic, and rigorous walk-forward testing.
+Proper causal design was a core focus of this project. Issues or bugs can be reported via GitHub.
+
 ## License
 
 This project is licensed under the MIT License.
