@@ -1,6 +1,6 @@
 import torch.nn as nn
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from hmoe2.schema import HmoeTask, HmoeNodeType
 from hmoe2.tensor import HmoeTensor, HmoeInput, HmoeOutput
@@ -32,7 +32,7 @@ class HmoeExpert(HmoeNode):
         task_heads (nn.ModuleDict): Mapping of task names to task-specific heads.
     """
 
-    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32, dilations: List[int] = None):
+    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32, config: Any = None):
         """Initializes the HmoeExpert.
 
         Args:
@@ -58,40 +58,39 @@ class HmoeExpert(HmoeNode):
         # Store hidden dimension size for backend and heads
         self.hidden_dim = hidden_dim
 
-        # Store dilations for TCN backends
-        self.dilations = dilations
+        # Rest of config
+        self.config = config
 
         # Dynamically instantiate the appropriate backend based on configuration
         if self.backend_type == "LINEAR":
-            self.core = LinearBackend(self.input_dim, self.hidden_dim)
+            self.core = LinearBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "TCN":
             if self.dilations is not None:
-                self.core = TcnBackend(self.input_dim, self.hidden_dim, dilations=self.dilations)
+                self.core = TcnBackend(self.input_dim, self.hidden_dim, config=config)
             else:
-                self.core = TcnBackend(self.input_dim, self.hidden_dim)
+                self.core = TcnBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "GRU":
-            self.core = GruBackend(self.input_dim, self.hidden_dim)
+            self.core = GruBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "LSTM":
-            self.core = LstmBackend(self.input_dim, self.hidden_dim)
+            self.core = LstmBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type in ["GATED_RESIDUAL", "GR"]:
-            self.core = GatedResidualBackend(self.input_dim, self.hidden_dim)
+            self.core = GatedResidualBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type in ["CAUSAL_TRANSFORMER", "TRANSFORMER", "CT"]:
-            self.core = CausalTransformerBackend(self.input_dim, self.hidden_dim)
+            self.core = CausalTransformerBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type in ["VANILLA_RNN", "RNN"]:
-            self.core = RnnBackend(self.input_dim, self.hidden_dim)
+            self.core = RnnBackend(self.input_dim, self.hidden_dim, config=config)
         # Experimental (TODO: add parameterization)
         elif self.backend_type in ["SIGNATURE", "SIGNATORY", "ROUGH_PATH", "RP"]:
             self.core = SignatureBackend(
                 input_dim=self.input_dim, 
-                hidden_dim=self.hidden_dim, 
-                depth=2
+                hidden_dim=self.hidden_dim,
+                config=config
             )
         elif self.backend_type in ["MATRIX_PROFILE", "MOTIF", "MP"]:
             self.core = MotifsBackend(
                 self.input_dim, 
-                self.hidden_dim, 
-                num_motifs=8, 
-                motif_length=12
+                self.hidden_dim,
+                config=config
             )
         else:
             # Raise an error if an unknown backend type is provided

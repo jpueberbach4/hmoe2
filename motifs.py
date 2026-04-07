@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import Dict
+
 
 class MotifsBackend(nn.Module):
     """Motif-matching backend using sliding Pearson correlation.
@@ -25,9 +27,7 @@ class MotifsBackend(nn.Module):
         self,
         input_dim: int,
         hidden_dim: int,
-        num_motifs: int = 8,
-        motif_length: int = 12,
-        dropout_p: float = 0.2
+        config: Dict = {}
     ):
         """Initializes the MotifsBackend.
 
@@ -39,6 +39,11 @@ class MotifsBackend(nn.Module):
             dropout_p (float, optional): Dropout probability. Defaults to 0.2.
         """
         super().__init__()
+
+        # Config
+        num_motifs = config.get('num_motifs', 8)
+        motif_length = config.get('num_motifs', 12)
+        dropout_p = config.get('dropout', 0.2)
 
         # Store configuration
         self.num_motifs = num_motifs

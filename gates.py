@@ -75,7 +75,7 @@ class HmoeGateTCN(nn.Module):
         hidden_dim: int = 32,
         kernel_size: int = 3,
         dilations: List[int] = [1, 2, 4, 8],
-        noise_std: float = 0.1,
+        noise_std: float = 0.0,
         dropout_p: float = 0.1
     ):
         """Initializes the HmoeGateTCN.

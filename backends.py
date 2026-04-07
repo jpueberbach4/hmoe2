@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+from typing import Dict
+
 # Map signature as a backend (so it can get imported from backends)
 from hmoe2.signatures import SignatureBackend
 from hmoe2.motifs import MotifsBackend
@@ -71,7 +73,7 @@ class LinearBackend(nn.Module):
         net (nn.Sequential): Sequential stack of linear, activation, and normalization layers.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the LinearBackend module.
 
         Args:
@@ -80,14 +82,19 @@ class LinearBackend(nn.Module):
         """
         super().__init__()
 
+        # Config
+        dropout_p = config.get('dropout', 0.2)
         # Define a simple feedforward network with normalization and activation
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
             nn.LayerNorm(hidden_dim),
+            nn.Dropout(p=dropout_p),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU()
+            nn.GELU(),
+            nn.Dropout(p=dropout_p),
         )
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes the input tensor through the feedforward network.
@@ -114,7 +121,7 @@ class TcnBackend(nn.Module):
         dropout (nn.Dropout): Dropout layer for regularization.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, dilations=[1, 2, 4, 8], dropout_p: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the TcnBackend module.
 
         Args:
@@ -125,6 +132,10 @@ class TcnBackend(nn.Module):
         """
         super().__init__()
 
+        # Config
+        dilations = config.get('dilations', [1,2,4,8])
+        dropout_p = config.get('dropout', 0.2)
+  
         # Initialize a list to hold convolutional layers
         self.convs = nn.ModuleList()
 
@@ -180,7 +191,7 @@ class GruBackend(nn.Module):
         output_dropout (nn.Dropout): Dropout applied to outputs.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int = 2, dropout_p: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the GruBackend module.
 
         Args:
@@ -190,6 +201,10 @@ class GruBackend(nn.Module):
             dropout_p (float): Dropout probability.
         """
         super().__init__()
+
+        # Config
+        num_layers = config.get('num_layers', 2)
+        dropout_p = config.get('dropout', 0.2)
 
         # Initialize GRU with optional inter-layer dropout
         self.gru = nn.GRU(
@@ -233,7 +248,7 @@ class CausalTransformerBackend(nn.Module):
         transformer (nn.TransformerEncoder): Transformer encoder stack.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int = 2, nheads: int = 4, dropout_p: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the CausalTransformerBackend module.
 
         Args:
@@ -244,6 +259,11 @@ class CausalTransformerBackend(nn.Module):
             dropout_p (float): Dropout probability.
         """
         super().__init__()
+        
+        # Config
+        num_layers = config.get('num_layers', 2)
+        nheads = config.get('nheads', 4)
+        dropout_p = config.get('dropout', 0.2)
 
         self.hidden_dim = hidden_dim
 
@@ -325,7 +345,7 @@ class GatedResidualBackend(nn.Module):
         layer_norm (nn.LayerNorm): Normalization layer.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, dropout_p: float = 0.1):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the GatedResidualBackend module.
 
         Args:
@@ -334,6 +354,9 @@ class GatedResidualBackend(nn.Module):
             dropout_p (float): Dropout probability.
         """
         super().__init__()
+
+        # Config
+        dropout_p = config.get('dropout', 0.2)
 
         # Project input to hidden dimension
         self.input_proj = nn.Linear(input_dim, hidden_dim)
@@ -382,7 +405,7 @@ class LstmBackend(nn.Module):
         output_dropout (nn.Dropout): Dropout layer.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int = 2, dropout_p: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the LstmBackend module.
 
         Args:
@@ -392,6 +415,10 @@ class LstmBackend(nn.Module):
             dropout_p (float): Dropout probability.
         """
         super().__init__()
+        
+        # Config
+        num_layers = config.get('num_layers', 2)
+        dropout_p = config.get('dropout', 0.2)
 
         # Initialize LSTM with optional dropout between layers
         self.lstm = nn.LSTM(
@@ -434,7 +461,7 @@ class RnnBackend(nn.Module):
         output_dropout (nn.Dropout): Dropout applied to outputs.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int = 2, dropout_p: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
         """Initializes the RnnBackend module.
 
         Args:
@@ -444,6 +471,10 @@ class RnnBackend(nn.Module):
             dropout_p (float): Dropout probability.
         """
         super().__init__()
+        
+        # Config
+        num_layers = config.get('num_layers', 2)
+        dropout_p = config.get('dropout', 0.2)
 
         # Initialize Vanilla RNN with optional inter-layer dropout
         self.rnn = nn.RNN(

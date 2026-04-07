@@ -57,7 +57,7 @@ class HmoeFeature(Serializable):
     """
     name: str = None
     clamp: float = 0.0
-    normalize: bool = False
+    normalize: int = 0
 
 
 @dataclass
