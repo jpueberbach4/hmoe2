@@ -48,6 +48,8 @@ The model leverages the Signatory backend with a window size of 200, and the rou
 
 For detecting intermediate tops and bottoms, I rely on multiple RSI indicators derived from three different timeframes: 4-hour, 8-hour, and 12-hour intervals. Each RSI is configured with a period of 14 and smoothed with a factor of 5, using the same normalization approach as described above.
 
+Very important: make sure your regime labelling is DEAD-ACCURATE. It needs to be FLAWLESS! I did it manually. Tedious job but you only need to do it for one asset.
+
 ## Interesting
 
 I encountered an interesting unintended result yesterday. By excessively scaling a particular feature, I effectively “distorted” the input representation of USD/JPY in a way that highlighted market turning points with remarkable precision.
