@@ -65,10 +65,7 @@ class HmoeExpert(HmoeNode):
         if self.backend_type == "LINEAR":
             self.core = LinearBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "TCN":
-            if self.dilations is not None:
-                self.core = TcnBackend(self.input_dim, self.hidden_dim, config=config)
-            else:
-                self.core = TcnBackend(self.input_dim, self.hidden_dim, config=config)
+            self.core = TcnBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "GRU":
             self.core = GruBackend(self.input_dim, self.hidden_dim, config=config)
         elif self.backend_type == "LSTM":
