@@ -64,5 +64,9 @@ The RSI-based solution will be published once I am sufficiently confident to dep
 
 bp.markets.ingest will get relaunched.
 
+## Summarized
+
+This custom Hierarchical Mixture of Experts (HMoE) architecture differentiates itself from general-purpose frameworks like Microsoft Tutel by strictly partitioning the feature space, meaning each expert is trained exclusively on a dedicated subset of indicators rather than the entire shared dataset. By isolating these feature domains, the architecture effectively eliminates catastrophic interference, allowing specialized experts to learn specific market conditions—such as a macro trend or a micro inflection point—without having their weights corrupted by conflicting signals from unrelated tasks. The result is a highly auditable, multi-task engine where distinct neural networks act as independent specialists, ultimately coordinated by a master router to execute complex, multi-layered execution logic.
+
 
 
