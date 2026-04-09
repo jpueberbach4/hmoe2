@@ -32,7 +32,7 @@ class HmoeExpert(HmoeNode):
         task_heads (nn.ModuleDict): Mapping of task names to task-specific heads.
     """
 
-    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32, config: Any = None):
+    def __init__(self, name: str, tasks: list, features: list, backend: str = "LINEAR", hidden_dim: int = 32, config: Dict = {}):
         """Initializes the HmoeExpert.
 
         Args:

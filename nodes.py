@@ -176,6 +176,8 @@ class HmoeNode(nn.Module, ABC):
         Raises:
             ValueError: If node type is unknown.
         """
+        from hmoe2.routers import HmoeRouter
+        from hmoe2.experts import HmoeExpert
         # Extract node type and name
         node_type = config.get('type', '').upper()
         name = config.get('name', 'unnamed')
@@ -269,5 +271,3 @@ class HmoeNode(nn.Module, ABC):
         return sorted(feature_dict.values(), key=lambda f: f.name)
 
 
-from hmoe2.routers import HmoeRouter
-from hmoe2.experts import HmoeExpert

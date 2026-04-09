@@ -39,7 +39,15 @@ Install PyTorch compiled specifically for CUDA 12.1, followed by the core depend
 pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
 
 # 2. Install specific mathematical and data dependencies
-pip install signatory requests pandas numpy plotly PyYAML PyArrow
+pip install signatory requests pandas numpy plotly PyYAML PyArrow pytest
+```
+
+### Step 2.4: Running pytest
+
+Inside the code path:
+
+```bash
+pytest 
 ```
 
 ---

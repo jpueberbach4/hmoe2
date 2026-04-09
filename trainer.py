@@ -153,7 +153,7 @@ class HmoeTrainer:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Checkpoint not found at {filepath}")
             
-        checkpoint = torch.load(filepath, map_location=self.device)
+        checkpoint = torch.load(filepath, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         print(f"[*] Successfully loaded checkpoint: {filename}")

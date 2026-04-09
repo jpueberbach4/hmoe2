@@ -42,7 +42,7 @@ class MotifsBackend(nn.Module):
 
         # Config
         num_motifs = config.get('num_motifs', 8)
-        motif_length = config.get('num_motifs', 12)
+        motif_length = config.get('motif_length', 12)
         dropout_p = config.get('dropout', 0.2)
 
         # Store configuration
