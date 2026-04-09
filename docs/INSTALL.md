@@ -13,7 +13,7 @@ The Hierarchical Mixture of Experts (HMoE2) engine requires a highly specific en
 
 ## 2. Environment Setup
 
-You must build the environment manually to ensure the C++ CUDA kernels for the MoE router (Microsoft Tutel) compile correctly against your specific GPU architecture.
+You must build the environment manually to ensure PyTorch and the C++ geometric path signature dependencies compile correctly against your specific GPU architecture.
 
 ### Step 2.1: System Dependencies
 Install the required system compilers and networking tools:
@@ -22,7 +22,7 @@ sudo apt-get update
 sudo apt-get install -y build-essential libomp-dev wget gpg python3-venv python3-pip python3-dev libnccl-dev
 ```
 
-*Note: Microsoft Tutel requires **CMake 3.18 or higher**. If your Ubuntu distribution defaults to an older version, you must upgrade it via the Kitware repository before proceeding.*
+*Note: Certain C++ dependencies require **CMake 3.18 or higher**. If your Ubuntu distribution defaults to an older version, you must upgrade it via the Kitware repository before proceeding.*
 
 ### Step 2.2: Python Virtual Environment
 Create and activate an isolated Python environment to prevent dependency conflicts:
@@ -75,7 +75,7 @@ The API must return a JSON object containing a `result` dictionary, where keys a
 
 Once your environment is compiled and your data API is live, you can execute the engine.
 
-## Step 4.1: Determinisim
+### Step 4.1: Determinism
 
 Store as `determinism.py`
 
