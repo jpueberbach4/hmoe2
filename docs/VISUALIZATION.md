@@ -143,3 +143,5 @@ fig.add_trace(go.Heatmap(
 ```
 
 By combining strict hook discipline with optimized rendering, you transition from blindly trusting a loss function to actively auditing your network's structural understanding of the market.
+
+Note: this is the CURRENT approach. Abstractions for hooks have been registered as a thing to do. It will become easier in the near-future. 
