@@ -140,6 +140,10 @@ The main remaining issue is signal flickering, which increases trading costs and
 
 This is an honest initial assessment of the technology for trading applications. I am now transitioning to a new backend architecture based on a different class of neural networks—specifically Spiking Neural Networks (SNNs)—to evaluate whether they can reduce signal flickering and further improve overall performance.
 
+Flickering issue (I will solve this):
+
+![Flickering](../images/example-regime3.png)
+
 ## Interesting
 
 I encountered an interesting unintended result yesterday. By excessively scaling a particular feature, I effectively “distorted” the input representation of USD/JPY in a way that highlighted market turning points with remarkable precision.
