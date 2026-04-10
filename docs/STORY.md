@@ -146,11 +146,38 @@ Flickering issue (I will solve this):
 
 The accidental reversal detector which works flawlessly on USD-JPY (very high WR) is being further explored, seeing if i can make the solution transition to different assets (it should be possible). General advice is to "play" with intentional scaling errors. You might end up with a pleasant surprise.
 
-Experiment, just let the position run until regime flip but do take 2/3R:
+Experiment, just let the position run until regime flip (Stop and Reverse):
 
 ![Example](../images/example-regime4.png)
 
-Green line are wins, red lines are losses.
+Green lines are wins, red lines are losses.
+
+Full period stats. 
+
+```bash
+=================================================================
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | DETAILED WALK-FORWARD REPORT (Continuous Stop-and-Reverse)
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | =================================================================
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Total Trades     : 147
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Win Rate         : 66.67%
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Net PnL (R)      : 126.42 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Profit Factor    : 8.28
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Ann. Sharpe      : 2.65
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | -----------------------------------------------------------------
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Average Win      : +1.47 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Average Loss     : -0.35 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Largest Win      : +11.96 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Largest Loss     : -4.96 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Max Drawdown     : 4.96 R
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | -----------------------------------------------------------------
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Longs Executed   : 74
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Shorts Executed  : 73
+2026-04-10 16:51:32 | INFO    | Macro_Visualizer | =================================================================
+```
+
+Remarkable but dangerous strategy. Max drawdown of 4.96 is not good. Need to get the distributions and add a hard stop for the Nth percentile.
+
+Interesting is that these trades are fully NN driven. No manual interventions. 
 
 ## Interesting
 
