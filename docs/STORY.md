@@ -205,6 +205,8 @@ Interesting is that these trades are fully NN driven. No manual interventions.
 
 > CRITICAL DISCLAIMER: This system is exceptionally sensitive to ground truth data. You will absolutely not replicate these results without flawless, painstakingly accurate manual labeling. Garbage in, garbage out.
 
+> I AM SEVERELY CHECKING THIS FOR LEAKAGE. THIS IS NOT A VICTORY, YET.
+
 ## Interesting
 
 I encountered an interesting unintended result yesterday. By excessively scaling a particular feature, I effectively “distorted” the input representation of USD/JPY in a way that highlighted market turning points with remarkable precision.
