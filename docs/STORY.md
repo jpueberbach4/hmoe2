@@ -155,6 +155,8 @@ Green lines are wins, red lines are losses.
 Full period stats. 
 
 ```bash
+GBP
+
 =================================================================
 2026-04-10 16:51:32 | INFO    | Macro_Visualizer | DETAILED WALK-FORWARD REPORT (Continuous Stop-and-Reverse)
 2026-04-10 16:51:32 | INFO    | Macro_Visualizer | =================================================================
@@ -173,11 +175,35 @@ Full period stats.
 2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Longs Executed   : 74
 2026-04-10 16:51:32 | INFO    | Macro_Visualizer | Shorts Executed  : 73
 2026-04-10 16:51:32 | INFO    | Macro_Visualizer | =================================================================
+
+EURO
+
+=================================================================
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | DETAILED WALK-FORWARD REPORT (Continuous Stop-and-Reverse)
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | =================================================================
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Total Trades     : 139
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Win Rate         : 70.50%
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Net PnL (R)      : 114.47 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Profit Factor    : 13.13
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Ann. Sharpe      : 3.18
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | -----------------------------------------------------------------
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Average Win      : +1.26 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Average Loss     : -0.23 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Largest Win      : +7.92 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Largest Loss     : -1.13 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Max Drawdown     : 1.13 R
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | -----------------------------------------------------------------
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Longs Executed   : 70
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | Shorts Executed  : 69
+2026-04-10 17:13:48 | INFO    | Macro_Visualizer | =================================================================
+
 ```
 
 Remarkable but dangerous strategy. Max drawdown of 4.96 is not good. Need to get the distributions and add a hard stop for the Nth percentile.
 
 Interesting is that these trades are fully NN driven. No manual interventions. 
+
+> CRITICAL DISCLAIMER: This system is exceptionally sensitive to ground truth data. You will absolutely not replicate these results without flawless, painstakingly accurate manual labeling. Garbage in, garbage out.
 
 ## Interesting
 
