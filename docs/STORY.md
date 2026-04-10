@@ -42,13 +42,103 @@ Intermediate top detection is performing particularly well. However, bottom dete
 
 ## What is the general advice
 
-For trend direction, I utilize two weekly indicators: RSI and MACD. Both indicators are lightly smoothed using a factor of 3. The RSI values are normalized by dividing by 100, while the MACD (specifically the MACD line) is scaled by a factor of 1000 for GBP/USD. A positive class weighting (pos_weight) between 3 and 6 is applied during training.
+### Model Overview
 
-The model leverages the Signatory backend with a window size of 200, and the router configuration at this stage is set to a simple pass-through.
+For trend direction, I use two weekly indicators: RSI and MACD. Both are lightly smoothed using a factor of 3. The RSI is normalized by dividing by 100, while the MACD line is scaled by a factor of 1000 (for GBP/USD). During training, I apply a positive class weighting (pos_weight) between 3 and 6 to address class imbalance.
 
-For detecting intermediate tops and bottoms, I rely on multiple RSI indicators derived from three different timeframes: 4-hour, 8-hour, and 12-hour intervals. Each RSI is configured with a period of 14 and smoothed with a factor of 5, using the same normalization approach as described above.
+The model is built on the Signatory backend with a window size of 200. At this stage, the router configuration is a simple pass-through.
 
-Very important: make sure your regime labelling is DEAD-ACCURATE. It needs to be FLAWLESS! I did it manually. Tedious job but you only need to do it for one asset.
+### Regime Detection
+
+The regime detector performs exceptionally well at identifying the start of uptrends, provided that the labels are accurate. However, it tends to lag when marking the end of uptrends.
+
+This issue can be resolved by introducing a bearish head alongside the bullish one. By plotting both confidence outputs in a single panel, regime transitions become clear:
+
+- Bullish crossover → exit short, enter long
+- Bearish crossover → exit long, enter short
+
+To reduce noise and avoid false switches during pullbacks, apply light smoothing to both confidence lines.
+
+### Intermediate Tops & Bottoms
+
+To detect intermediate turning points, I use multiple RSI indicators across different timeframes:
+
+- 4-hour RSI (period 14, smoothed with factor 5)
+- 8-hour RSI (period 14, smoothed with factor 5)
+- 12-hour RSI (period 14, smoothed with factor 5)
+
+All RSI values are normalized in the same way as the weekly RSI.
+
+### Critical Requirement: Label Quality
+
+Accurate regime labeling is absolutely essential. The labels must be flawless—this is the single most important factor for performance.
+
+I created these labels manually. While tedious, this process only needs to be done once per asset and has a major impact on model quality.
+
+### Example: Strategy Rules
+
+- Training period: 2005–2020
+- Out-of-sample: 2020–present
+- Single model trained on GBP/USD
+- Rough path only backends
+- Seperate heads for bull and bear regime
+- Seperate features for bull and bear regime (both binary on/off)
+
+Execution logic:
+
+- Bullish crossover → close short, enter long
+- Bearish crossover → close long, enter short
+
+Risk management:
+
+- Initial stop-loss: 1%
+- Move stop to breakeven at +1%
+- Trailing stop: 1.5%
+- **Slippage and swap costs not yet included**
+
+### Results (Walk-Forward Backtest)
+
+```bash
+GBP-USD: 
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | WALK-FORWARD BACKTEST RESULTS (1% Risk | 1% Target to BE | 1.5% Trail)
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | ============================================================
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | Total Trades : 147
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | Win Rate     : 63.95%
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | Net PnL (R)  : 89.68 R
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | Longs        : 74
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | Shorts       : 73
+2026-04-10 12:06:59 | INFO    | Macro_Visualizer | ============================================================
+
+EUR-USD:
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | WALK-FORWARD BACKTEST RESULTS (1% Risk | 1% Target to BE | 1.5% Trail)
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | ============================================================
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | Total Trades : 139
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | Win Rate     : 66.91%
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | Net PnL (R)  : 78.12 R
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | Longs        : 70
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | Shorts       : 69
+2026-04-10 12:15:17 | INFO    | Macro_Visualizer | ============================================================
+
+NZD-USD:
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | WALK-FORWARD BACKTEST RESULTS (1% Risk | 1% Target to BE | 1.5% Trail)
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | ============================================================
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | Total Trades : 151
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | Win Rate     : 52.32%
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | Net PnL (R)  : 73.62 R
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | Longs        : 76
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | Shorts       : 75
+2026-04-10 12:16:21 | INFO    | Macro_Visualizer | ============================================================
+
+...
+```
+
+### Conclusion
+
+When properly labeled, the model generalizes well across multiple currency pairs and produces consistent profitability—even without optimization.
+
+The main remaining issue is signal flickering, which increases trading costs and should be reduced in future iterations.
+
+This is an honest initial assessment of the technology for trading applications. I am now transitioning to a new backend architecture based on a different class of neural networks—specifically Spiking Neural Networks (SNNs)—to evaluate whether they can reduce signal flickering and further improve overall performance.
 
 ## Interesting
 
