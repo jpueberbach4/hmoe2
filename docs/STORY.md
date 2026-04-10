@@ -146,6 +146,12 @@ Flickering issue (I will solve this):
 
 The accidental reversal detector which works flawlessly on USD-JPY (very high WR) is being further explored, seeing if i can make the solution transition to different assets (it should be possible). General advice is to "play" with intentional scaling errors. You might end up with a pleasant surprise.
 
+Experiment, just let the position run until regime flip but do take 2/3R:
+
+![Example](../images/example-regime4.png)
+
+Green line are wins, red lines are losses.
+
 ## Interesting
 
 I encountered an interesting unintended result yesterday. By excessively scaling a particular feature, I effectively “distorted” the input representation of USD/JPY in a way that highlighted market turning points with remarkable precision.
