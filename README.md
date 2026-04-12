@@ -64,13 +64,27 @@ A Matrix Profile is vulnerable to time-warping (a crash taking 5 days looks comp
 
 A Signature measures pure geometry, outputting a consistent state "barcode" regardless of the market's velocity. It translates the slow, grinding chop of a multi-month downtrend and the sharp violence of a flash-crash into stable, recognizable macro-regimes for the downstream task heads.
 
-## Examples
+## Note
 
-A screenshot says more than a thousand words. This is what you can build with this.
+I stripped down the example. Building a reliable regime detection system is extremely difficult. I’ve gone through a lot of academic research on predicting trend shifts, and for a while I thought I had it figured out. I was seeing a 66% win rate with 128R over two years—until I discovered there was data leakage.
 
-Geometric Regime detection (no lookahead)
+I’ve experimented with:
 
-![Example-1](images/example-regime.png)
+- HMM
+- SNN with Rough Path features
+- Triple Barrier Method (various labeling approaches)
+- Brute-force indicator correlations using Rough Path theory
+- Top/bottom detection (surprisingly the most reliable so far)
+- Indicator manifolds (even rendered them 3d (as a walkforward 3D movie))
+- Various neural network architectures and combinations
+
+The reality is: it’s just hard. The noise in the market is overwhelming. Signal to noise ratio is bad.
+
+That said, the architecture itself is solid. Even a small amount of leakage gets picked up instantly, and the model will happily turn it into a “profitable” neural net.
+
+If market prediction were easy, everyone would already be doing it.
+
+I will continue digging, I know it is possible to achieve a statistical edge. 
 
 ## License
 
