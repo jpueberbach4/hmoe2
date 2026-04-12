@@ -100,6 +100,8 @@ It is very hard to consistently get numbers like these:
 2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
 ````
 
+One of the most important things is that your features are scaled properly and are all in the same range.
+
 ## License
 
 This project is licensed under the MIT License.
