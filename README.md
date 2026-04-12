@@ -86,6 +86,20 @@ If market prediction were easy, everyone would already be doing it.
 
 I will continue digging, I know it is possible to achieve a statistical edge. 
 
+It is very hard to consistently get numbers like these:
+
+```bash
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | STOP & REVERSE BACKTEST RESULTS (Pure Regime Following)
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Total Trades : 89
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Win Rate     : 48.31%
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Net PnL (%)  : 32.37% (Cumulative Uncompounded)
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Ann. Sharpe  : 2.46
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Longs        : 45
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Shorts       : 44
+2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
+````
+
 ## License
 
 This project is licensed under the MIT License.
