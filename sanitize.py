@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import logging
 from typing import List
 from hmoe2.tensor import HmoeTensor
@@ -27,8 +28,12 @@ class HmoeSanitizer:
     including feature filtering, NaN handling, rolling normalization,
     value clamping, and diagnostic logging.
 
-    All operations are applied in a deterministic pipeline to ensure
-    numerical stability and schema compliance.
+    Normalization Types (set via feature.normalize integer):
+        1: Static Bounded Scale (/100)
+        2: Dynamic Rolling Z-Score
+        3: Rolling MinMax Scaling [0, 1]
+        4: Log-Transform (Volatility/Volume)
+        5: Robust Tanh Estimator [-1, 1] (Outlier resistance)
 
     Methods:
         sanitize: Main entry point for preprocessing raw HmoeTensor data.
@@ -42,18 +47,8 @@ class HmoeSanitizer:
         rolling_window: int = 1080,
         verbose: bool = True
     ) -> HmoeTensor:
-        """Cleans and normalizes input tensor according to feature schema.
-
-        Args:
-            raw_tensor (HmoeTensor): Input tensor with associated feature indices.
-            allowed_features (List[HmoeFeature]): Whitelist of permitted features.
-            drop_nan_columns (bool): Whether to remove columns containing NaNs.
-            rolling_window (int): Window size for rolling normalization (Type 2).
-            verbose (bool): Whether to output diagnostic logs.
-
-        Returns:
-            HmoeTensor: Sanitized tensor with filtered and normalized data.
-        """
+        """Cleans and normalizes input tensor according to feature schema."""
+        
         # Clone raw tensor data to avoid mutating original input
         clean_data = raw_tensor.tensor.clone()
 
@@ -84,7 +79,7 @@ class HmoeSanitizer:
 
                     # Capture normalization flag/type if enabled
                     if hasattr(allowed_obj, 'normalize') and allowed_obj.normalize:
-                        # Cast to int so True -> 1, False -> 0, or explicit 1 / 2 is maintained
+                        # Cast to int to maintain type 1, 2, 3, 4, or 5
                         active_norms[col_name] = int(allowed_obj.normalize)
 
                     break
@@ -117,8 +112,6 @@ class HmoeSanitizer:
 
             if nan_mask.any():
                 keep_mask = ~nan_mask
-
-                # Filter tensor and indices based on NaN mask
                 clean_data = clean_data[:, :, keep_mask]
                 current_indices = [
                     feat for feat, keep in zip(current_indices, keep_mask.tolist()) if keep
@@ -130,32 +123,35 @@ class HmoeSanitizer:
         # Determine sequence length for rolling operations
         seq_len = clean_data.size(1)
 
+        # Dynamische window berekening om te voorkomen dat window > dataset size
+        safe_rolling_window = min(rolling_window, seq_len)
+
         # Create count tensor for expanding-to-rolling window normalization
         counts = torch.arange(1, seq_len + 1, device=clean_data.device).float().unsqueeze(0)
-        counts_clamped = torch.clamp(counts, max=rolling_window)
+        counts_clamped = torch.clamp(counts, max=safe_rolling_window)
 
         # Apply normalization logic based on integer flag
         for col_idx, feature in enumerate(current_indices):
             norm_type = active_norms.get(feature.name, 0)
+            feature_slice = clean_data[:, :, col_idx]
             
             # TYPE 1: Static Bounded Scale (e.g., / 100 for RSI)
             if norm_type == 1:
-                clean_data[:, :, col_idx] = clean_data[:, :, col_idx] / 100.0
+                # 50 aftrekken maakt het middelpunt 0. Delen door 50 rekt het uit naar -1 tot +1.
+                clean_data[:, :, col_idx] = (feature_slice - 50.0) / 50.0
 
             # TYPE 2: Dynamic Rolling Z-Score
             elif norm_type == 2:
-                feature_slice = clean_data[:, :, col_idx]
-
                 # Compute cumulative sums for efficient rolling calculations
                 cumsum = torch.cumsum(feature_slice, dim=1)
                 cumsum_sq = torch.cumsum(feature_slice ** 2, dim=1)
 
                 # Shift cumulative sums to compute rolling window differences
                 shifted_cumsum = torch.zeros_like(cumsum)
-                shifted_cumsum[:, rolling_window:] = cumsum[:, :-rolling_window]
+                shifted_cumsum[:, safe_rolling_window:] = cumsum[:, :-safe_rolling_window]
 
                 shifted_cumsum_sq = torch.zeros_like(cumsum_sq)
-                shifted_cumsum_sq[:, rolling_window:] = cumsum_sq[:, :-rolling_window]
+                shifted_cumsum_sq[:, safe_rolling_window:] = cumsum_sq[:, :-safe_rolling_window]
 
                 # Compute rolling window sum and squared sum
                 window_sum = cumsum - shifted_cumsum
@@ -167,12 +163,38 @@ class HmoeSanitizer:
 
                 # Clamp variance to prevent numerical instability
                 roll_var = torch.clamp(roll_var, min=1e-8)
-
-                # Compute rolling standard deviation
                 roll_std = torch.sqrt(roll_var)
 
                 # Apply Z-score normalization
                 clean_data[:, :, col_idx] = (feature_slice - roll_mean) / roll_std
+
+            # TYPE 3: Rolling MinMax Scaling (Preserves shape, maps strictly to [0, 1])
+            elif norm_type == 3:
+                unfolded = feature_slice.unfold(1, safe_rolling_window, 1)
+                mins = unfolded.min(dim=-1).values
+                maxs = unfolded.max(dim=-1).values
+                
+                # Pad left side to align with sequence length (causal)
+                mins = F.pad(mins, (safe_rolling_window - 1, 0), mode='replicate')
+                maxs = F.pad(maxs, (safe_rolling_window - 1, 0), mode='replicate')
+                
+                denom = maxs - mins
+                clean_data[:, :, col_idx] = (feature_slice - mins) / torch.clamp(denom, min=1e-8)
+
+            # TYPE 4: Log-Transform (Compresses exponentially growing metrics like Volume)
+            elif norm_type == 4:
+                clean_data[:, :, col_idx] = torch.sign(feature_slice) * torch.log1p(torch.abs(feature_slice))
+
+            # TYPE 5: Robust Tanh Estimator (Squashes extreme outliers, maps to [-1, 1])
+            elif norm_type == 5:
+                mu = feature_slice.mean(dim=1, keepdim=True)
+                sigma = feature_slice.std(dim=1, keepdim=True)
+                clean_data[:, :, col_idx] = torch.tanh(0.5 * ((feature_slice - mu) / torch.clamp(sigma, min=1e-8)))
+
+            elif norm_type == 6:
+                # We berekenen wel de spreiding (sigma), maar we trekken het gemiddelde (mu) er NIET af!
+                sigma = feature_slice.std(dim=1, keepdim=True)
+                clean_data[:, :, col_idx] = torch.tanh(feature_slice / torch.clamp(sigma, min=1e-8))
 
         # Apply feature-specific clamping after normalization
         for col_idx, feature in enumerate(current_indices):
@@ -187,11 +209,11 @@ class HmoeSanitizer:
 
         # Output diagnostic statistics if verbose mode is enabled
         if verbose and len(current_indices) > 0:
-            logger.info("\n" + "=" * 95)
+            logger.info("\n" + "=" * 105)
             logger.info(
                 f"{'FEATURE NAME':<30} | {'MEAN':>8} | {'STD':>8} | {'MIN':>8} | {'MAX':>8} | {'DIAGNOSTIC ALERTS'}"
             )
-            logger.info("-" * 95)
+            logger.info("-" * 105)
 
             # Iterate over each feature column to compute statistics
             for col_idx, feature in enumerate(current_indices):
@@ -208,9 +230,17 @@ class HmoeSanitizer:
 
                 # Flag normalized features with their specific type
                 if norm_type == 1:
-                    alerts.append("Static Scaled (/100)")
+                    alerts.append("Static Scaled (-50/50) [-1,1]")
                 elif norm_type == 2:
-                    alerts.append("Rolling Norm (Z-Score)")
+                    alerts.append("Rolling Z-Score")
+                elif norm_type == 3:
+                    alerts.append("Rolling MinMax [0,1]")
+                elif norm_type == 4:
+                    alerts.append("Log Transform")
+                elif norm_type == 5:
+                    alerts.append("Robust Tanh (mean)[-1,1]")
+                elif norm_type == 6:
+                    alerts.append("Robust Tanh (zero-anchored)[-1,1]")
 
                 # Detect statistical outliers
                 if (max_val > mean_val + 3 * std_val) or (min_val < mean_val - 3 * std_val):
@@ -235,7 +265,7 @@ class HmoeSanitizer:
                     f"{display_name:<30} | {mean_val:>8.3f} | {std_val:>8.3f} | {min_val:>8.3f} | {max_val:>8.3f} | {alert_str}"
                 )
 
-            logger.info("=" * 95 + "\n")
+            logger.info("=" * 105 + "\n")
 
         # Return sanitized tensor wrapped in HmoeTensor structure
         return HmoeTensor(
