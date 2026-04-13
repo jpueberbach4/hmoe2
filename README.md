@@ -100,7 +100,11 @@ It is very hard to consistently get numbers like these:
 2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
 ````
 
+(the sharpe is quite good on this oos run but its not consistent, not crossasset, very unstable in generalization. Which is explainable given the feature set).
+
 One of the most important things is that your features are scaled properly and are all in the same range.
+
+I am 3D'ing the featuee set a bit mors. Thats an added benefit of having everything in the same scale now. You can build 3D manifolds and visually compare what it looks like on turning points.
 
 ## License
 
