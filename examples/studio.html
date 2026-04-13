@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <title>Manifold | HMoE Input analysis</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        :root { --bg: #0e1117; --panel: #1e2129; --border: #333; --accent: #00ff96; --text: #eee; --text-dim: #888; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; overflow: hidden; display: flex; height: 100vh; }
+        
+        #sidebar { width: 340px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 15px; box-sizing: border-box; overflow-y: auto; z-index: 100; }
+        h2 { margin: 0 0 15px 0; font-size: 16px; color: var(--accent); letter-spacing: 1px; text-transform: uppercase; }
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 5px; font-weight: bold; }
+        input, select, button { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 8px; border-radius: 4px; font-family: inherit; }
+        button { background: #262730; cursor: pointer; font-weight: bold; transition: background 0.2s; border: 1px solid #444; }
+        button:hover { background: #3a3b45; }
+        button.primary { background: var(--accent); color: #000; margin-top: 10px; border: none; padding: 10px; font-size: 13px; }
+        button.primary:hover { background: #00cc7a; }
+        
+        .flex-row { display: flex; gap: 10px; }
+        
+        #indicator-list { list-style: none; padding: 0; margin: 0; min-height: 50px; border: 1px dashed var(--border); border-radius: 4px; background: rgba(0,0,0,0.2); }
+        .draggable-item { background: #262730; margin: 5px; padding: 8px 10px; border-radius: 4px; border: 1px solid #444; cursor: grab; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-family: monospace; }
+        .draggable-item.dragging { opacity: 0.5; background: #444; }
+        .remove-btn { color: #ff4b4b; cursor: pointer; font-weight: bold; padding: 0 5px; }
+        .remove-btn:hover { color: #ff0000; }
+
+        #workspace { flex-grow: 1; display: flex; flex-direction: column; position: relative; }
+        #price-chart { height: 35%; border-bottom: 1px solid var(--border); }
+        
+        /* Wrapper voor onze Camera Hack */
+        #manifold-wrapper { height: 65%; position: relative; width: 100%; }
+        #manifold-chart { width: 100%; height: 100%; }
+        
+        /* Overlay schild: Laat hover door (none), behalve bij drag (auto) */
+        #camera-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 50; pointer-events: none; cursor: grab; }
+        #camera-overlay.active { cursor: grabbing; pointer-events: auto; }
+
+        #playback-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: rgba(14,17,23,0.9); border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px; gap: 15px; z-index: 100; }
+        input[type=range] { flex-grow: 1; accent-color: var(--accent); cursor: pointer; }
+        #play-btn { width: 100px; }
+        #time-label { font-family: monospace; color: var(--accent); font-size: 14px; width: 220px; text-align: right; }
+
+        .loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 1000; font-size: 18px; background: rgba(14,17,23,0.95); padding: 20px 40px; border: 1px solid var(--accent); border-radius: 8px; font-family: monospace; display: none; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Manifold Studio</h2>
+    
+    <div class="control-group">
+        <label>SYMBOL</label>
+        <select id="sel-symbol"><option>Loading...</option></select>
+    </div>
+    <div class="control-group">
+        <label>TIMEFRAME</label>
+        <select id="sel-tf"><option>Loading...</option></select>
+    </div>
+    <div class="flex-row">
+        <div class="control-group" style="flex-grow: 1;">
+            <label>FROM DATE</label>
+            <input type="date" id="date-from" value="2022-01-01">
+        </div>
+        <div class="control-group" style="flex-grow: 1;">
+            <label>TO DATE (Opt)</label>
+            <input type="date" id="date-to">
+        </div>
+    </div>
+    
+    <hr style="border-color: #333; margin: 10px 0;">
+    
+    <div class="control-group">
+        <label>ADD INDICATOR</label>
+        <select id="sel-api-indicators"><option>Loading API...</option></select>
+        <div class="flex-row" style="margin-top: 5px;">
+            <input type="text" id="ind-param-override" placeholder="e.g. rsi_14" style="font-family: monospace;">
+            <button id="btn-add-ind" style="width: 70px;">Add</button>
+        </div>
+    </div>
+
+    <div class="control-group" style="flex-grow: 1; display: flex; flex-direction: column;">
+        <label>MANIFOLD TOPOLOGY (DRAG TO REORDER)</label>
+        <ul id="indicator-list"></ul>
+    </div>
+
+    <button id="btn-fetch" class="primary">FETCH & COMPILE TENSORS</button>
+</div>
+
+<div id="workspace">
+    <div id="loader" class="loader">⚙️ FETCHING & COMPILING...</div>
+    <div id="price-chart"></div>
+    
+    <div id="manifold-wrapper">
+        <div id="manifold-chart"></div>
+        <div id="camera-overlay"></div>
+    </div>
+    
+    <div id="playback-bar">
+        <button id="play-btn">▶ PLAY</button>
+        <select id="speed-select" style="width: 70px;">
+            <option value="1">1x</option>
+            <option value="5">5x</option>
+            <option value="10" selected>10x</option>
+            <option value="25">25x</option>
+        </select>
+        <input type="range" id="time-slider" min="0" max="100" value="0">
+        <div id="time-label">-- / --</div>
+    </div>
+</div>
+
+<script>
+    let symbolData = {}; 
+    let availableIndicators = {};
+    
+    let apiQueries = ['rsi_14', 'macd_12_26_9', 'atr_14']; 
+    let activeTracks = []; 
+    let removedTracks = new Set(); 
+
+    let gData = []; 
+    let normData = {}; 
+    
+    let isPlaying = false;
+    let lastAnimTime = 0;
+    const LOOKBACK = 240; 
+    let hoveredTrack = null; 
+    let dragTargetTrack = null;
+
+    let camR = 2.306;
+    let camTheta = -0.588;
+    let camPhi = 1.216;
+    let isDraggingCam = false;
+    let lastMouseX = 0, lastMouseY = 0;
+
+    const DOM = {
+        symbolSel: document.getElementById('sel-symbol'),
+        tfSel: document.getElementById('sel-tf'),
+        apiSelect: document.getElementById('sel-api-indicators'),
+        paramOverride: document.getElementById('ind-param-override'),
+        indList: document.getElementById('indicator-list'),
+        loader: document.getElementById('loader'),
+        slider: document.getElementById('time-slider'),
+        timeLabel: document.getElementById('time-label'),
+        playBtn: document.getElementById('play-btn'),
+        wrapper: document.getElementById('manifold-wrapper'),
+        overlay: document.getElementById('camera-overlay')
+    };
+
+    async function init() {
+        setupDragAndDrop();
+        setupEventListeners();
+        setupCameraEngine(); 
+        
+        await fetchSymbols();
+        await fetchAvailableIndicators();
+        
+        fetchData();
+    }
+
+    function setupCameraEngine() {
+        DOM.wrapper.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { 
+                isDraggingCam = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                DOM.overlay.classList.add('active'); 
+                e.stopPropagation(); 
+            }
+        }, true); 
+
+        DOM.wrapper.addEventListener('wheel', (e) => {
+            camR += e.deltaY * 0.002;
+            camR = Math.max(0.5, Math.min(10, camR));
+            updateCameraMath();
+            e.stopPropagation();
+            e.preventDefault();
+        }, { passive: false, capture: true });
+
+        DOM.overlay.addEventListener('mousemove', (e) => {
+            if(isDraggingCam) {
+                let dx = e.clientX - lastMouseX;
+                let dy = e.clientY - lastMouseY;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+
+                camTheta -= dx * 0.01;
+                camPhi -= dy * 0.01;
+                camPhi = Math.max(0.01, Math.min(Math.PI - 0.01, camPhi));
+
+                updateCameraMath();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if(isDraggingCam) {
+                isDraggingCam = false;
+                DOM.overlay.classList.remove('active');
+            }
+        });
+    }
+
+    function updateCameraMath() {
+        let cx = camR * Math.sin(camPhi) * Math.cos(camTheta);
+        let cy = camR * Math.sin(camPhi) * Math.sin(camTheta);
+        let cz = camR * Math.cos(camPhi);
+
+        if (window.manifoldLayout && window.manifoldLayout.scene) {
+            window.manifoldLayout.scene.camera.eye = { x: cx, y: cy, z: cz };
+            if (!isPlaying && gData.length > 0) {
+                Plotly.relayout('manifold-chart', { 'scene.camera.eye': window.manifoldLayout.scene.camera.eye }).catch(()=>{});
+            }
+        }
+    }
+
+
+    async function fetchSymbols() {
+        try {
+            const res = await fetch("http://localhost:8000/ohlcv/1.1/list/symbols/output/JSON");
+            const data = await res.json();
+            if (data.status === "ok" && data.result) {
+                symbolData = data.result;
+                DOM.symbolSel.innerHTML = Object.keys(symbolData).sort().map(s => `<option value="${s}">${s}</option>`).join('');
+                updateTimeframes();
+                DOM.symbolSel.addEventListener('change', updateTimeframes);
+            }
+        } catch(e) { console.error("API Error (Symbols):", e); }
+    }
+
+    function updateTimeframes() {
+        const sym = DOM.symbolSel.value;
+        const tfs = symbolData[sym] || ["8h"];
+        DOM.tfSel.innerHTML = tfs.map(tf => `<option value="${tf}">${tf}</option>`).join('');
+        if(tfs.includes("8h")) DOM.tfSel.value = "8h";
+    }
+
+    async function fetchAvailableIndicators() {
+        try {
+            const res = await fetch("http://localhost:8000/ohlcv/1.1/list/indicators/output/JSON");
+            const data = await res.json();
+            if (data.status === "ok" && data.result) {
+                availableIndicators = data.result;
+                DOM.apiSelect.innerHTML = Object.keys(availableIndicators).sort().map(k => `<option value="${k}">${k}</option>`).join('');
+                DOM.apiSelect.addEventListener('change', (e) => {
+                    let key = e.target.value;
+                    let defs = availableIndicators[key].defaults || {};
+                    let vals = Object.values(defs).join('_');
+                    DOM.paramOverride.value = vals ? `${key}_${vals}` : key;
+                });
+                DOM.apiSelect.dispatchEvent(new Event('change'));
+            }
+        } catch (e) {
+            DOM.apiSelect.innerHTML = "<option>API Unreachable</option>";
+        }
+    }
+
+    function addTrackToUI(trackName) {
+        const li = document.createElement('li');
+        li.className = 'draggable-item';
+        li.draggable = true;
+        li.dataset.id = trackName;
+        
+        let displayName = trackName.includes('__') ? `↳ ${trackName.split('__')[1]} (${trackName.split('__')[0]})` : `≡ ${trackName}`;
+        
+        li.innerHTML = `<span>${displayName}</span> <span class="remove-btn" onclick="window.removeTrack('${trackName}', this)">✖</span>`;
+        
+        li.addEventListener('mouseenter', () => {
+            hoveredTrack = trackName;
+            if(gData.length > 0) renderFrame(parseInt(DOM.slider.value), false);
+        });
+        li.addEventListener('mouseleave', () => {
+            hoveredTrack = null;
+            if(gData.length > 0) renderFrame(parseInt(DOM.slider.value), false);
+        });
+
+        DOM.indList.appendChild(li);
+    }
+
+    window.removeTrack = function(trackName, btnEl) {
+        activeTracks = activeTracks.filter(x => x !== trackName);
+        removedTracks.add(trackName);
+        btnEl.parentElement.remove();
+        if(gData.length > 0) compileManifold(); 
+    };
+
+    window.syncActiveTracksArray = function() {
+        const items = document.querySelectorAll('.draggable-item');
+        activeTracks = Array.from(items).map(item => item.dataset.id);
+    };
+
+    function setupDragAndDrop() {
+        let draggedItem = null;
+        DOM.indList.addEventListener('dragstart', (e) => {
+            if(e.target.classList.contains('draggable-item')) {
+                draggedItem = e.target;
+                e.target.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+            }
+        });
+        DOM.indList.addEventListener('dragend', (e) => {
+            if(e.target.classList.contains('draggable-item')) {
+                e.target.classList.remove('dragging');
+                draggedItem = null;
+                dragTargetTrack = null; // Reset de drag target
+                syncActiveTracksArray();
+                if(gData.length > 0) compileManifold(); 
+            }
+        });
+        DOM.indList.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            
+            let targetEl = e.target.closest('.draggable-item');
+            if (targetEl && targetEl !== draggedItem) {
+                 let targetId = targetEl.dataset.id;
+                 if (dragTargetTrack !== targetId) {
+                     dragTargetTrack = targetId;
+                     if(gData.length > 0) renderFrame(parseInt(DOM.slider.value), false);
+                 }
+            } else if (!targetEl && dragTargetTrack !== null) {
+                 dragTargetTrack = null;
+                 if(gData.length > 0) renderFrame(parseInt(DOM.slider.value), false);
+            }
+
+            const afterElement = getDragAfterElement(DOM.indList, e.clientY);
+            const current = document.querySelector('.dragging');
+            if(current) {
+                if (afterElement == null) {
+                    DOM.indList.appendChild(current);
+                } else {
+                    DOM.indList.insertBefore(current, afterElement);
+                }
+            }
+        });
+    }
+
+    function getDragAfterElement(container, y) {
+        const draggableElements = [...container.querySelectorAll('.draggable-item:not(.dragging)')];
+        return draggableElements.reduce((closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+                return { offset: offset, element: child };
+            } else {
+                return closest;
+            }
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
+    }
+
+    function setupEventListeners() {
+        document.getElementById('btn-add-ind').addEventListener('click', () => {
+            let ind = DOM.paramOverride.value.trim();
+            if (ind && !apiQueries.includes(ind)) {
+                apiQueries.push(ind);
+                fetchData(); 
+            }
+        });
+
+        document.getElementById('btn-fetch').addEventListener('click', fetchData);
+        DOM.slider.addEventListener('input', (e) => renderFrame(parseInt(e.target.value), false)); 
+        DOM.playBtn.addEventListener('click', togglePlay);
+        
+        window.addEventListener('keydown', (e) => {
+            if (["Space", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(e.code)) e.preventDefault();
+            let current = parseInt(DOM.slider.value), next = current;
+            if (e.key === "ArrowRight") next = Math.min(gData.length - 1, current + 1);
+            else if (e.key === "ArrowLeft") next = Math.max(LOOKBACK, current - 1);
+            else if (e.key === "PageUp") next = Math.min(gData.length - 1, current + LOOKBACK);
+            else if (e.key === "PageDown") next = Math.max(LOOKBACK, current - LOOKBACK);
+            else if (e.code === "Space") { togglePlay(); return; }
+            else return;
+            DOM.slider.value = next; renderFrame(next, false);
+        });
+    }
+
+    async function fetchData() {
+        if (apiQueries.length === 0) return;
+        
+        DOM.loader.style.display = 'block';
+        isPlaying = false;
+        DOM.playBtn.innerText = "▶ PLAY";
+
+        let savedPos = parseInt(DOM.slider.value);
+
+        const sym = DOM.symbolSel.value;
+        const tf = DOM.tfSel.value;
+        const from = document.getElementById('date-from').value + ",00:00:00";
+        const toVal = document.getElementById('date-to').value;
+        const indQuery = apiQueries.join(':');
+        
+        let url = `http://localhost:8000/ohlcv/1.1/select/${sym},${tf}[${indQuery}]/after/${from}`;
+        if(toVal) url += `/until/${toVal},23:59:59`;
+        
+        url += `/output/JSON?limit=50000&order=asc&subformat=3`;
+
+        try {
+            const res = await fetch(url);
+            const json = await res.json();
+            
+            if (!json.result || !json.result.time || json.result.time.length === 0) {
+                throw new Error("No data returned from API.");
+            }
+            
+            let numRows = json.result.time.length;
+            let cols = Object.keys(json.result);
+            let standardCols = ['time','open','high','low','close','volume'];
+            
+            gData = [];
+            for(let i=0; i<numRows; i++){
+                let obj = { indicators: {} };
+                cols.forEach(c => {
+                    if(standardCols.includes(c)) {
+                        obj[c] = json.result[c][i];
+                    } else {
+                        obj.indicators[c] = json.result[c][i];
+                    }
+                });
+                if (typeof obj.time === 'number') {
+                   let d = new Date(obj.time);
+                   obj.time = d.toISOString().replace('T', ' ').split('.')[0];
+                }
+                gData.push(obj);
+            }
+
+            let fetchedIndicatorKeys = Object.keys(gData[0].indicators);
+            
+            DOM.indList.innerHTML = '';
+            let newActiveTracks = [];
+            
+            activeTracks.forEach(t => {
+                if (fetchedIndicatorKeys.includes(t)) {
+                    newActiveTracks.push(t);
+                    addTrackToUI(t);
+                }
+            });
+            
+            fetchedIndicatorKeys.forEach(t => {
+                if (!newActiveTracks.includes(t) && !removedTracks.has(t)) {
+                    newActiveTracks.push(t);
+                    addTrackToUI(t);
+                }
+            });
+            
+            activeTracks = newActiveTracks;
+
+            DOM.slider.min = LOOKBACK;
+            DOM.slider.max = gData.length - 1;
+            
+            if (!isNaN(savedPos) && savedPos >= LOOKBACK && savedPos < gData.length) {
+                DOM.slider.value = savedPos;
+            } else {
+                DOM.slider.value = gData.length - 1;
+            }
+
+            compileManifold();
+            
+        } catch (e) {
+            alert("Error fetching data: " + e.message);
+        } finally {
+            DOM.loader.style.display = 'none';
+        }
+    }
+
+    function normalizeVector(arr) {
+        let min = Infinity, max = -Infinity;
+        for (let i = 0; i < arr.length; i++) {
+            if (arr[i] < min) min = arr[i];
+            if (arr[i] > max) max = arr[i];
+        }
+        if (min === max) return arr.map(() => 0);
+        let range = max - min;
+        let norm = new Float32Array(arr.length);
+        for (let i = 0; i < arr.length; i++) {
+            norm[i] = 2 * ((arr[i] - min) / range) - 1;
+        }
+        return norm;
+    }
+
+    function compileManifold() {
+        if (gData.length === 0 || activeTracks.length === 0) return;
+
+        activeTracks.forEach(track => {
+            let rawVals = gData.map(d => {
+                let v = d.indicators[track];
+                return (v !== undefined && v !== null && !isNaN(v)) ? parseFloat(v) : 0;
+            });
+            normData[track] = normalizeVector(rawVals);
+        });
+
+        initCharts();
+        
+        let currentPos = parseInt(DOM.slider.value);
+        if (isNaN(currentPos) || currentPos < LOOKBACK || currentPos >= gData.length) {
+            currentPos = gData.length - 1;
+            DOM.slider.value = currentPos;
+        }
+        renderFrame(currentPos, false);
+    }
+
+    function initCharts() {
+        const ohlc = { 
+            x: gData.map(d => d.time), 
+            open: gData.map(d => d.open), 
+            high: gData.map(d => d.high), 
+            low: gData.map(d => d.low), 
+            close: gData.map(d => d.close), 
+            type: 'candlestick',
+            increasing: {line: {color: '#00ff96'}},
+            decreasing: {line: {color: '#ff4b4b'}}
+        };
+        Plotly.newPlot('price-chart', [ohlc], { 
+            template: 'plotly_dark', paper_bgcolor: 'transparent', plot_bgcolor: 'transparent', 
+            margin: { t: 20, b: 20, l: 50, r: 50 }, xaxis: { rangeslider: { visible: false } }, 
+            yaxis: { gridcolor: '#222' } 
+        });
+
+        let allAxes = ['Price', ...activeTracks]; 
+        
+        let initialTraces = [];
+        if (activeTracks.length > 1) {
+            initialTraces.push({ type: 'surface', z: [[0,0],[0,0]], colorscale: [[0, 'rgb(255, 75, 75)'], [0.5, 'rgb(30, 33, 41)'], [1, 'rgb(0, 255, 150)']], opacity: 0.8, showscale: false });
+        } else {
+            initialTraces.push({ type: 'scatter3d', mode: 'lines', x: [], y: [], z: [], line: { color: '#00ff96', width: 4 }, showlegend: false });
+        }
+        
+        initialTraces.push({ type: 'scatter3d', mode: 'lines', x: [], y: [], z: [], line: { color: '#00ff96', width: 7 }, showlegend: false }); 
+        initialTraces.push({ type: 'scatter3d', mode: 'lines', x: [], y: [], z: [], line: { color: '#ff4b4b', width: 7 }, showlegend: false }); 
+        initialTraces.push({ type: 'scatter3d', mode: 'lines', x: [], y: [], z: [], line: { color: '#00ff96', width: 1.5 }, showlegend: false }); 
+        initialTraces.push({ type: 'scatter3d', mode: 'lines', x: [], y: [], z: [], line: { color: '#ff4b4b', width: 1.5 }, showlegend: false }); 
+
+        // Center the y-axis around 0: from -LOOKBACK/2 to LOOKBACK/2
+        window.manifoldLayout = {
+            template: 'plotly_dark', paper_bgcolor: 'transparent', margin: { t: 0, b: 0, l: 0, r: 0 },
+            uirevision: 'true',
+            scene: { 
+                aspectratio: { x: 1, y: 1.5, z: 0.5 }, 
+                camera: { eye: { x: camR * Math.sin(camPhi) * Math.cos(camTheta), y: camR * Math.sin(camPhi) * Math.sin(camTheta), z: camR * Math.cos(camPhi) } }, 
+                xaxis: { type: 'category', categoryorder: 'array', categoryarray: allAxes }, 
+                yaxis: { showticklabels: false, range: [-LOOKBACK/2, LOOKBACK/2] }, 
+                zaxis: { range: [-1, 1] },
+                hovermode: 'closest' 
+            }
+        };
+
+        Plotly.newPlot('manifold-chart', initialTraces, window.manifoldLayout);
+    }
+
+    function renderFrame(idx, isAnimationUpdate = true) {
+        if(gData.length === 0 || activeTracks.length === 0) return;
+        DOM.timeLabel.innerText = `[T=${idx}] ${gData[idx].time}`;
+
+        let startIdx = idx - LOOKBACK; 
+        let windowData = gData.slice(startIdx, idx + 1);
+        
+        let staticYAxis = windowData.map((_, i) => i - (LOOKBACK/2));
+        
+        let zMatrix = [];
+        for (let i = startIdx; i <= idx; i++) {
+            let row = [];
+            activeTracks.forEach(track => {
+                row.push(normData[track][i]);
+            });
+            zMatrix.push(row);
+        }
+
+        let localMin = Infinity, localMax = -Infinity;
+        windowData.forEach(d => {
+            if(d.low < localMin) localMin = d.low;
+            if(d.high > localMax) localMax = d.high;
+        });
+        let localRange = localMax - localMin || 1;
+        const normLocal = (val) => 2 * ((val - localMin) / localRange) - 1;
+
+        let maxCandles = LOOKBACK + 1;
+        let gBody = { x: [], y: [], z: [] }, rBody = { x: [], y: [], z: [] };
+        let gWick = { x: [], y: [], z: [] }, rWick = { x: [], y: [], z: [] };
+
+        windowData.forEach((d, i) => {
+            let isG = d.close > d.open;
+            let tBody = isG ? gBody : rBody;
+            let tWick = isG ? gWick : rWick;
+            let xVal = 'Price'; 
+            let yVal = i - (LOOKBACK/2); 
+
+            tBody.x.push(xVal, xVal, null);
+            tBody.y.push(yVal, yVal, null);
+            tBody.z.push(normLocal(d.open), normLocal(d.close), null);
+
+            tWick.x.push(xVal, xVal, null);
+            tWick.y.push(yVal, yVal, null);
+            tWick.z.push(normLocal(d.low), normLocal(d.high), null);
+        });
+
+        let targetLength = maxCandles * 3;
+        while(gBody.x.length < targetLength) { gBody.x.push(null); gBody.y.push(null); gBody.z.push(null); }
+        while(rBody.x.length < targetLength) { rBody.x.push(null); rBody.y.push(null); rBody.z.push(null); }
+        while(gWick.x.length < targetLength) { gWick.x.push(null); gWick.y.push(null); gWick.z.push(null); }
+        while(rWick.x.length < targetLength) { rWick.x.push(null); rWick.y.push(null); rWick.z.push(null); }
+
+        let traces = [];
+
+        if (activeTracks.length > 1) {
+            traces.push({ x: activeTracks, y: staticYAxis, z: zMatrix, type: 'surface', colorscale: [[0, 'rgb(255, 75, 75)'], [0.5, 'rgb(30, 33, 41)'], [1, 'rgb(0, 255, 150)']], opacity: 0.8, showscale: false });
+        } else if (activeTracks.length === 1) {
+            traces.push({ x: windowData.map(() => activeTracks[0]), y: staticYAxis, z: windowData.map((d, i) => normData[activeTracks[0]][startIdx + i]), type: 'scatter3d', mode: 'lines', line: { color: '#00ff96', width: 4 }, showlegend: false });
+        }
+
+        traces.push({ type: 'scatter3d', mode: 'lines', x: gBody.x, y: gBody.y, z: gBody.z, line: { color: '#00ff96', width: 7 }, showlegend: false });
+        traces.push({ type: 'scatter3d', mode: 'lines', x: rBody.x, y: rBody.y, z: rBody.z, line: { color: '#ff4b4b', width: 7 }, showlegend: false });
+        traces.push({ type: 'scatter3d', mode: 'lines', x: gWick.x, y: gWick.y, z: gWick.z, line: { color: '#00ff96', width: 1.5 }, showlegend: false });
+        traces.push({ type: 'scatter3d', mode: 'lines', x: rWick.x, y: rWick.y, z: rWick.z, line: { color: '#ff4b4b', width: 1.5 }, showlegend: false });
+
+        // NIEUW: De Focus Lijn dwars door de manifold (y=0)
+        traces.push({
+            type: 'scatter3d',
+            mode: 'lines',
+            x: [activeTracks[0], activeTracks[activeTracks.length-1]], 
+            y: [0, 0], 
+            z: [1, 1], 
+            line: { color: 'cyan', width: 4, dash: 'dash' },
+            showlegend: false
+        });
+        
+        traces.push({
+            type: 'scatter3d',
+            mode: 'lines',
+            x: ['Price', 'Price'],
+            y: [0, 0],
+            z: [-1, 1],
+            line: { color: 'cyan', width: 4, dash: 'dash' },
+            showlegend: false
+        });
+
+
+        // Highlight hovered track
+        if (hoveredTrack && activeTracks.includes(hoveredTrack)) {
+            let hoverZ = [];
+            for (let i = startIdx; i <= idx; i++) {
+                hoverZ.push(normData[hoveredTrack][i]);
+            }
+            traces.push({
+                type: 'scatter3d',
+                mode: 'lines',
+                x: windowData.map(() => hoveredTrack),
+                y: staticYAxis,
+                z: hoverZ,
+                line: { color: '#ffffff', width: 8 },
+                showlegend: false
+            });
+        }
+        
+        if (dragTargetTrack && activeTracks.includes(dragTargetTrack)) {
+             let dragZ = [];
+             for (let i = startIdx; i <= idx; i++) {
+                 dragZ.push(normData[dragTargetTrack][i]);
+             }
+             traces.push({
+                 type: 'scatter3d',
+                 mode: 'lines',
+                 x: windowData.map(() => dragTargetTrack),
+                 y: staticYAxis,
+                 z: dragZ,
+                 line: { color: '#ffcc00', width: 8 },
+                 showlegend: false
+             });
+        }
+
+        let gd = document.getElementById('manifold-chart');
+        
+        Plotly.react(gd, traces, window.manifoldLayout);
+        
+        let midTime = gData[idx - Math.floor(LOOKBACK/2)].time;
+        Plotly.relayout('price-chart', { 'shapes': [{ type: 'line', x0: midTime, x1: midTime, y0: 0, y1: 1, yref: 'paper', line: { color: 'cyan', width: 1.5, dash: 'dash' } }] });
+    }
+
+    function togglePlay() {
+        isPlaying = !isPlaying;
+        DOM.playBtn.innerText = isPlaying ? "⏸ PAUSE" : "▶ PLAY";
+        DOM.playBtn.style.color = isPlaying ? "#ff4b4b" : "#000";
+        if (isPlaying) { lastAnimTime = performance.now(); requestAnimationFrame(animate); }
+    }
+
+    function animate(time) {
+        if (!isPlaying) return;
+        let speed = parseInt(document.getElementById('speed-select').value);
+        let delay = 100 / speed;
+
+        if (time - lastAnimTime > delay) {
+            let val = parseInt(DOM.slider.value) + 1;
+            if (val >= gData.length) { togglePlay(); return; }
+            DOM.slider.value = val; 
+            renderFrame(val, true); 
+            lastAnimTime = time;
+        }
+        requestAnimationFrame(animate);
+    }
+
+
+init();
+</script>
+</body>
+</html>
