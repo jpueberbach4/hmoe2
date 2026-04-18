@@ -64,44 +64,6 @@ A Matrix Profile is vulnerable to time-warping (a crash taking 5 days looks comp
 
 A Signature measures pure geometry, outputting a consistent state "barcode" regardless of the market's velocity. It translates the slow, grinding chop of a multi-month downtrend and the sharp violence of a flash-crash into stable, recognizable macro-regimes for the downstream task heads.
 
-## Note
-
-I stripped down the example. Building a reliable regime detection system is extremely difficult. I’ve gone through a lot of academic research on predicting trend shifts, and for a while I thought I had it figured out. I was seeing a 66% win rate with 128R over two years—until I discovered there was data leakage.
-
-I’ve experimented with:
-
-- HMM
-- SNN with Rough Path features
-- Triple Barrier Method (various labeling approaches)
-- Brute-force indicator correlations using Rough Path theory
-- Top/bottom detection (surprisingly the most reliable so far)
-- Indicator manifolds (even rendered them 3d (as a walkforward 3D movie))
-- Various neural network architectures and combinations
-
-The reality is: it’s just hard. The noise in the market is overwhelming. Signal to noise ratio is bad.
-
-That said, the architecture itself is solid. Even a small amount of leakage gets picked up instantly, and the model will happily turn it into a “profitable” neural net.
-
-If market prediction were easy, everyone would already be doing it.
-
-I will continue digging, I know it is possible to achieve a statistical edge. 
-
-It is very hard to consistently get numbers like these:
-
-```bash
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | STOP & REVERSE BACKTEST RESULTS (Pure Regime Following)
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Total Trades : 89
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Win Rate     : 48.31%
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Net PnL (%)  : 32.37% (Cumulative Uncompounded)
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Ann. Sharpe  : 2.46
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Longs        : 45
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | Shorts       : 44
-2026-04-12 18:25:33 | INFO    | Macro_Visualizer | ============================================================
-````
-
-One of the most important things is that your features are scaled properly and are all in the same range.
-
 ## License
 
 This project is licensed under the MIT License.
