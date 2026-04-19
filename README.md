@@ -66,6 +66,8 @@ A Signature measures pure geometry, outputting a consistent state "barcode" rega
 
 NOTE: it is VERY DIFFICULT to detect regimes properly using Neural Networks. Every pullback potentially switches regimes. You will have to provide for very good labelling, features (various TF) and likely custom filtering code. You really need to comeup with innovative solutions for proper regime detection. When you have proper regime detection, the detection of the intermediate bottoms/tops is childsplay (that was one of the first things i had >80 percent accurate using this architecture).
 
+For labelling i used the following approach: determine chop arreas first using a centered efficiency ratio. If the price did not move much across a timewindow i assign it a certain value. The remaining open blocks are then easily identifyable as either bull (first candle < last candle) or as bear (inverted). This gives little flickering in the labels. 
+
 ## License
 
 This project is licensed under the MIT License.
