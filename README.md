@@ -64,6 +64,8 @@ A Matrix Profile is vulnerable to time-warping (a crash taking 5 days looks comp
 
 A Signature measures pure geometry, outputting a consistent state "barcode" regardless of the market's velocity. It translates the slow, grinding chop of a multi-month downtrend and the sharp violence of a flash-crash into stable, recognizable macro-regimes for the downstream task heads.
 
+NOTE: it is VERY DIFFICULT to detect regimes properly using Neural Networks. Every pullback potentially switches regimes. You will have to provide for very good labelling, features (various TF) and likely custom filtering code. You really need to comeup with innovative solutions for proper regime detection. When you have proper regime detection, the detection of the intermediate bottoms/tops is childsplay (that was one of the first things i had >80 percent accurate using this architecture).
+
 ## License
 
 This project is licensed under the MIT License.
