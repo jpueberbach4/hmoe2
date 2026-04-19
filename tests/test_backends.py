@@ -182,7 +182,6 @@ def test_causal_transformer_causality(input_dim, hidden_dim):
     assert torch.allclose(out1[:, :6, :], out2[:, :6, :], atol=1e-5)
     assert not torch.allclose(out1[:, 6:, :], out2[:, 6:, :], atol=1e-5)
 
-
 # ==========================================
 # GATED RESIDUAL BACKEND TESTS
 # ==========================================
@@ -195,4 +194,9 @@ def test_gated_residual_shape(dummy_sequence_data, input_dim, hidden_dim):
 def test_gated_residual_config(input_dim, hidden_dim):
     config = {'dropout': 0.7}
     model = GatedResidualBackend(input_dim, hidden_dim, config)
-    assert model.dropout.p == 0.7
+    
+    # Zoek de dropout laag op die genest zit in de nn.Sequential (self.net)
+    dropouts = [m for m in model.net.modules() if isinstance(m, torch.nn.Dropout)]
+    
+    assert len(dropouts) == 1, "Expected exactly 1 dropout layer in GatedResidualBackend"
+    assert dropouts[0].p == 0.7, f"Expected dropout p=0.7, got {dropouts[0].p}"

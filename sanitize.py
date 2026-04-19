@@ -1,42 +1,43 @@
 import torch
-import torch.nn.functional as F
 import logging
+import copy
 from typing import List
+
 from hmoe2.tensor import HmoeTensor
 from hmoe2.schema import HmoeFeature
 
-logger = logging.getLogger("HmoeSanitizer")
+
+# Configure dedicated logger (avoids polluting root logger)
+logger = logging.getLogger("HmoeSanitizerAuto")
 logger.propagate = False
 
-# Configure logger only once to avoid duplicate handlers
 if not logger.handlers:
     ch = logging.StreamHandler()
-
-    # Define log message format including timestamp, level, and source
-    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s')
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+    )
     ch.setFormatter(formatter)
-
-    # Attach handler and set default logging level
     logger.addHandler(ch)
     logger.setLevel(logging.INFO)
 
 
-class HmoeSanitizer:
-    """Preprocessing utility for enforcing feature integrity and consistency.
+class HmoeSanitizerAuto:
+    """Automated preprocessing pipeline for HMoE feature tensors.
 
-    This class performs a sequence of transformations on input tensors,
-    including feature filtering, NaN handling, rolling normalization,
-    value clamping, and diagnostic logging.
+    This sanitizer performs:
+    - Feature filtering based on allowed schema
+    - NaN / Inf handling
+    - Robust or standard normalization
+    - Soft clipping for numerical stability
+    - Optional explicit per-feature clamping
 
-    Normalization Types (set via feature.normalize integer):
-        1: Static Bounded Scale (/100)
-        2: Dynamic Rolling Z-Score
-        3: Rolling MinMax Scaling [0, 1]
-        4: Log-Transform (Volatility/Volume)
-        5: Robust Tanh Estimator [-1, 1] (Outlier resistance)
+    Design goals:
+    - Preserve temporal dynamics (no nonlinear squashing like tanh)
+    - Stabilize gradients (via clipping)
+    - Maintain robustness to outliers (via IQR scaling)
 
     Methods:
-        sanitize: Main entry point for preprocessing raw HmoeTensor data.
+        sanitize: Main preprocessing entrypoint.
     """
 
     @staticmethod
@@ -45,161 +46,206 @@ class HmoeSanitizer:
         allowed_features: List[HmoeFeature],
         drop_nan_columns: bool = False,
         rolling_window: int = 1080,
+        scale_factor: float = 1.0,
+        use_robust: bool = True,
         verbose: bool = True
     ) -> HmoeTensor:
-        """Cleans and normalizes input tensor according to feature schema."""
-        
-        # Clone raw tensor data to avoid mutating original input
+        """Sanitize and normalize input tensor.
+
+        Args:
+            raw_tensor (HmoeTensor): Input tensor [B, T, F].
+            allowed_features (List[HmoeFeature]): Schema defining allowed features.
+            drop_nan_columns (bool): Drop columns containing NaNs.
+            rolling_window (int): Reserved for future temporal normalization.
+            scale_factor (float): Scaling multiplier.
+            use_robust (bool): Use robust (median/IQR) scaling if True.
+            verbose (bool): Enable logging diagnostics.
+
+        Returns:
+            HmoeTensor: Cleaned tensor with updated feature indices.
+        """
+        # Clone tensor to avoid mutating original data
         clean_data = raw_tensor.tensor.clone()
 
-        # Copy feature indices for modification
+        # Copy feature metadata (column descriptors)
         current_indices = list(raw_tensor.indices)
 
-        # Initialize containers for filtering and feature configuration
+        # Tracks which columns to keep
         keep_cols = []
+
+        # Tracks filtered feature metadata
         keep_indices = []
 
-        # Track feature-specific clamp and normalization settings
+        # Stores per-feature clamp values (if defined)
         active_clamps = {}
-        active_norms = {}
 
-        # Iterate through all input features and apply whitelist filtering
+        # ---------------------------------------------------------------------
+        # 1. FEATURE FILTERING
+        # ---------------------------------------------------------------------
+        # Keep only features that match allowed schema
         for feature in current_indices:
             col_name = feature.name
+
             is_allowed = False
 
-            # Check if feature matches any allowed feature definition
+            # Match exact or hierarchical feature names (e.g., "price__lag1")
             for allowed_obj in allowed_features:
-                if col_name == allowed_obj.name or col_name.startswith(f"{allowed_obj.name}__"):
+                if (
+                    col_name == allowed_obj.name
+                    or col_name.startswith(f"{allowed_obj.name}__")
+                ):
                     is_allowed = True
 
-                    # Capture clamp value if defined
+                    # Store clamp config if present
                     if hasattr(allowed_obj, 'clamp') and allowed_obj.clamp is not None:
                         active_clamps[col_name] = allowed_obj.clamp
 
-                    # Capture normalization flag/type if enabled
-                    if hasattr(allowed_obj, 'normalize') and allowed_obj.normalize:
-                        # Cast to int to maintain type 1, 2, 3, 4, or 5
-                        active_norms[col_name] = int(allowed_obj.normalize)
-
                     break
 
-            # Record whether column should be kept
             keep_cols.append(is_allowed)
 
             if is_allowed:
-                # Propagate clamp configuration to feature instance if applicable
-                if col_name in active_clamps and hasattr(feature, 'clamp'):
-                    feature.clamp = active_clamps[col_name]
+                # Deep copy to avoid modifying original schema
+                feat_copy = copy.deepcopy(feature)
 
-                # Propagate normalization integer to feature instance
-                if col_name in active_norms and hasattr(feature, 'normalize'):
-                    feature.normalize = active_norms[col_name]
+                # Propagate clamp setting if applicable
+                if col_name in active_clamps and hasattr(feat_copy, 'clamp'):
+                    feat_copy.clamp = active_clamps[col_name]
 
-                # Add feature to retained indices
-                keep_indices.append(feature)
+                keep_indices.append(feat_copy)
 
-        # Apply boolean mask to filter tensor columns
-        keep_tensor_mask = torch.tensor(keep_cols, dtype=torch.bool, device=clean_data.device)
+        # Apply feature mask
+        keep_tensor_mask = torch.tensor(
+            keep_cols,
+            dtype=torch.bool,
+            device=clean_data.device
+        )
+
         clean_data = clean_data[:, :, keep_tensor_mask]
-
-        # Update feature indices to reflect filtered columns
         current_indices = keep_indices
 
-        # Optionally remove columns containing any NaN values
+        # ---------------------------------------------------------------------
+        # 2. NaN / INF HANDLING
+        # ---------------------------------------------------------------------
         if drop_nan_columns:
+            # Identify columns containing any NaNs
             nan_mask = torch.isnan(clean_data).any(dim=0).any(dim=0)
 
             if nan_mask.any():
                 keep_mask = ~nan_mask
+
+                # Remove problematic columns
                 clean_data = clean_data[:, :, keep_mask]
+
                 current_indices = [
                     feat for feat, keep in zip(current_indices, keep_mask.tolist()) if keep
                 ]
 
-        # Replace NaN and infinite values with zeros for numerical stability
-        clean_data = torch.nan_to_num(clean_data, nan=0.0, posinf=0.0, neginf=0.0)
+        # Replace NaN and Inf with safe values
+        clean_data = torch.nan_to_num(
+            clean_data,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0
+        )
 
-        # Determine sequence length for rolling operations
-        seq_len = clean_data.size(1)
+        # Tracks normalization strategy per feature
+        auto_actions = {}
 
-        # Dynamische window berekening om te voorkomen dat window > dataset size
-        safe_rolling_window = min(rolling_window, seq_len)
+        # Precompute quantile probabilities for robust scaling
+        if use_robust and len(current_indices) > 0:
+            q_probs = torch.tensor(
+                [0.25, 0.75],
+                dtype=clean_data.dtype,
+                device=clean_data.device
+            )
 
-        # Create count tensor for expanding-to-rolling window normalization
-        counts = torch.arange(1, seq_len + 1, device=clean_data.device).float().unsqueeze(0)
-        counts_clamped = torch.clamp(counts, max=safe_rolling_window)
-
-        # Apply normalization logic based on integer flag
+        # ---------------------------------------------------------------------
+        # 3. NORMALIZATION
+        # ---------------------------------------------------------------------
         for col_idx, feature in enumerate(current_indices):
-            norm_type = active_norms.get(feature.name, 0)
+            feature_name = feature.name.lower()
+
+            # Extract feature slice [B, T]
             feature_slice = clean_data[:, :, col_idx]
-            
-            # TYPE 1: Static Bounded Scale (e.g., / 100 for RSI)
-            if norm_type == 1:
-                # 50 aftrekken maakt het middelpunt 0. Delen door 50 rekt het uit naar -1 tot +1.
-                clean_data[:, :, col_idx] = (feature_slice - 50.0) / 50.0
 
-            # TYPE 2: Dynamic Rolling Z-Score
-            elif norm_type == 2:
-                # Compute cumulative sums for efficient rolling calculations
-                cumsum = torch.cumsum(feature_slice, dim=1)
-                cumsum_sq = torch.cumsum(feature_slice ** 2, dim=1)
+            # Skip label/target columns (must remain unchanged)
+            if "target" in feature_name or "label" in feature_name:
+                auto_actions[feature.name] = "Bypassed (Target)"
+                continue
 
-                # Shift cumulative sums to compute rolling window differences
-                shifted_cumsum = torch.zeros_like(cumsum)
-                shifted_cumsum[:, safe_rolling_window:] = cumsum[:, :-safe_rolling_window]
+            # Compute global statistics
+            global_mu = feature_slice.mean().item()
+            global_sigma = feature_slice.std(unbiased=False).item()
 
-                shifted_cumsum_sq = torch.zeros_like(cumsum_sq)
-                shifted_cumsum_sq[:, safe_rolling_window:] = cumsum_sq[:, :-safe_rolling_window]
+            # Skip near-constant features
+            if global_sigma < 1e-6:
+                auto_actions[feature.name] = "Bypassed (Flatline)"
+                continue
 
-                # Compute rolling window sum and squared sum
-                window_sum = cumsum - shifted_cumsum
-                window_sum_sq = cumsum_sq - shifted_cumsum_sq
+            # Detect whether feature is centered around zero
+            is_zero_anchored = abs(global_mu) < (0.15 * global_sigma)
 
-                # Calculate rolling mean and variance
-                roll_mean = window_sum / counts_clamped
-                roll_var = (window_sum_sq / counts_clamped) - (roll_mean ** 2)
+            # ---------------- ROBUST SCALING ----------------
+            if use_robust:
+                # Compute median per batch element
+                median = feature_slice.median(dim=1, keepdim=True).values
 
-                # Clamp variance to prevent numerical instability
-                roll_var = torch.clamp(roll_var, min=1e-8)
-                roll_std = torch.sqrt(roll_var)
+                # Compute quartiles
+                quantiles = torch.quantile(
+                    feature_slice,
+                    q_probs,
+                    dim=1,
+                    keepdim=True
+                )
 
-                # Apply Z-score normalization
-                clean_data[:, :, col_idx] = (feature_slice - roll_mean) / roll_std
+                q25, q75 = quantiles[0], quantiles[1]
 
-            # TYPE 3: Rolling MinMax Scaling (Preserves shape, maps strictly to [0, 1])
-            elif norm_type == 3:
-                unfolded = feature_slice.unfold(1, safe_rolling_window, 1)
-                mins = unfolded.min(dim=-1).values
-                maxs = unfolded.max(dim=-1).values
-                
-                # Pad left side to align with sequence length (causal)
-                mins = F.pad(mins, (safe_rolling_window - 1, 0), mode='replicate')
-                maxs = F.pad(maxs, (safe_rolling_window - 1, 0), mode='replicate')
-                
-                denom = maxs - mins
-                clean_data[:, :, col_idx] = (feature_slice - mins) / torch.clamp(denom, min=1e-8)
+                # Interquartile range (robust spread estimate)
+                iqr = torch.clamp(q75 - q25, min=1e-8)
 
-            # TYPE 4: Log-Transform (Compresses exponentially growing metrics like Volume)
-            elif norm_type == 4:
-                clean_data[:, :, col_idx] = torch.sign(feature_slice) * torch.log1p(torch.abs(feature_slice))
+                # Convert IQR to std approximation
+                robust_sigma = torch.clamp(iqr / 1.35, min=1e-8)
 
-            # TYPE 5: Robust Tanh Estimator (Squashes extreme outliers, maps to [-1, 1])
-            elif norm_type == 5:
+                # Apply scaling (centered or zero-anchored)
+                if is_zero_anchored:
+                    scaled = feature_slice / (scale_factor * robust_sigma)
+                    action = "Robust-Scale (Zero-Anchored)"
+                else:
+                    scaled = (feature_slice - median) / (scale_factor * robust_sigma)
+                    action = "Robust-Scale (Median-Centered)"
+
+            # ---------------- STANDARD SCALING ----------------
+            else:
                 mu = feature_slice.mean(dim=1, keepdim=True)
-                sigma = feature_slice.std(dim=1, keepdim=True)
-                clean_data[:, :, col_idx] = torch.tanh(0.5 * ((feature_slice - mu) / torch.clamp(sigma, min=1e-8)))
+                sigma = torch.clamp(
+                    feature_slice.std(dim=1, keepdim=True),
+                    min=1e-8
+                )
 
-            elif norm_type == 6:
-                # We berekenen wel de spreiding (sigma), maar we trekken het gemiddelde (mu) er NIET af!
-                sigma = feature_slice.std(dim=1, keepdim=True)
-                clean_data[:, :, col_idx] = torch.tanh(feature_slice / torch.clamp(sigma, min=1e-8))
+                if is_zero_anchored:
+                    scaled = feature_slice / (scale_factor * sigma)
+                    action = "Std-Scale (Zero-Anchored)"
+                else:
+                    scaled = (feature_slice - mu) / (scale_factor * sigma)
+                    action = "Std-Scale (Mean-Centered)"
 
-        # Apply feature-specific clamping after normalization
+            # Apply soft clipping to stabilize gradients
+            clean_data[:, :, col_idx] = torch.clamp(
+                scaled,
+                min=-5.0,
+                max=5.0
+            )
+
+            auto_actions[feature.name] = action
+
+        # ---------------------------------------------------------------------
+        # 4. EXPLICIT FEATURE CLAMPING
+        # ---------------------------------------------------------------------
         for col_idx, feature in enumerate(current_indices):
             clamp_val = active_clamps.get(feature.name, 0.0)
 
+            # Apply user-defined clamp if present
             if clamp_val is not None and clamp_val > 0.0:
                 clean_data[:, :, col_idx] = torch.clamp(
                     clean_data[:, :, col_idx],
@@ -207,67 +253,49 @@ class HmoeSanitizer:
                     max=clamp_val
                 )
 
-        # Output diagnostic statistics if verbose mode is enabled
+        # ---------------------------------------------------------------------
+        # 5. DIAGNOSTICS / LOGGING
+        # ---------------------------------------------------------------------
         if verbose and len(current_indices) > 0:
             logger.info("\n" + "=" * 105)
             logger.info(
-                f"{'FEATURE NAME':<30} | {'MEAN':>8} | {'STD':>8} | {'MIN':>8} | {'MAX':>8} | {'DIAGNOSTIC ALERTS'}"
+                f"{'FEATURE NAME':<30} | {'MEAN':>8} | {'STD':>8} | {'MIN':>8} | {'MAX':>8} | {'AUTO ACTION'}"
             )
             logger.info("-" * 105)
 
-            # Iterate over each feature column to compute statistics
+            # Log per-feature statistics
             for col_idx, feature in enumerate(current_indices):
                 col_data = clean_data[:, :, col_idx]
 
-                # Compute statistical metrics
                 mean_val = col_data.mean().item()
-                std_val = col_data.std(unbiased=False).item() if col_data.numel() > 1 else 0.0
+                std_val = (
+                    col_data.std(unbiased=False).item()
+                    if col_data.numel() > 1 else 0.0
+                )
                 min_val = col_data.min().item()
                 max_val = col_data.max().item()
 
-                alerts: List[str] = []
-                norm_type = active_norms.get(feature.name, 0)
+                action_str = auto_actions.get(feature.name, "None")
 
-                # Flag normalized features with their specific type
-                if norm_type == 1:
-                    alerts.append("Static Scaled (-50/50) [-1,1]")
-                elif norm_type == 2:
-                    alerts.append("Rolling Z-Score")
-                elif norm_type == 3:
-                    alerts.append("Rolling MinMax [0,1]")
-                elif norm_type == 4:
-                    alerts.append("Log Transform")
-                elif norm_type == 5:
-                    alerts.append("Robust Tanh (mean)[-1,1]")
-                elif norm_type == 6:
-                    alerts.append("Robust Tanh (zero-anchored)[-1,1]")
+                # Truncate long feature names for readability
+                display_name = (
+                    feature.name[:27] + "..."
+                    if len(feature.name) > 30
+                    else feature.name
+                )
 
-                # Detect statistical outliers
-                if (max_val > mean_val + 3 * std_val) or (min_val < mean_val - 3 * std_val):
-                    alerts.append("Has Outliers")
-
-                # Suggest normalization if distribution is unstable (only if currently unnormalized)
-                if norm_type == 0 and (abs(mean_val) > 0.5 or std_val > 3.0):
-                    alerts.append("Needs Norm")
-
-                # Suggest clamping if values exceed reasonable bounds
-                if max_val > 10.0 or min_val < -10.0:
-                    alerts.append("Needs Clamp")
-
-                # Construct alert string
-                alert_str = ", ".join(alerts) if alerts else "HEALTHY"
-
-                # Truncate long feature names for display
-                display_name = feature.name[:27] + "..." if len(feature.name) > 30 else feature.name
-
-                # Log formatted diagnostic row
                 logger.info(
-                    f"{display_name:<30} | {mean_val:>8.3f} | {std_val:>8.3f} | {min_val:>8.3f} | {max_val:>8.3f} | {alert_str}"
+                    f"{display_name:<30} | "
+                    f"{mean_val:>8.3f} | "
+                    f"{std_val:>8.3f} | "
+                    f"{min_val:>8.3f} | "
+                    f"{max_val:>8.3f} | "
+                    f"{action_str}"
                 )
 
             logger.info("=" * 105 + "\n")
 
-        # Return sanitized tensor wrapped in HmoeTensor structure
+        # Return cleaned tensor with updated feature metadata
         return HmoeTensor(
             tensor=clean_data,
             indices=current_indices

@@ -10,7 +10,7 @@ from hmoe2.nodes import HmoeNode
 from hmoe2.backends import (
     LinearBackend, TcnBackend, GruBackend,
     CausalTransformerBackend, GatedResidualBackend, LstmBackend,
-    RnnBackend, SignatureBackend, MotifsBackend
+    RnnBackend, SignatureBackend, MotifsBackend, SnnBackend
 )
 
 
@@ -85,6 +85,12 @@ class HmoeExpert(HmoeNode):
             )
         elif self.backend_type in ["MATRIX_PROFILE", "MOTIF", "MP"]:
             self.core = MotifsBackend(
+                self.input_dim, 
+                self.hidden_dim,
+                config=config
+            )
+        elif self.backend_type in ["SPIKING_NET", "SPIKING", "SNN"]:
+            self.core = SnnBackend(
                 self.input_dim, 
                 self.hidden_dim,
                 config=config

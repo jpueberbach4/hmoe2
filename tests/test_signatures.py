@@ -74,17 +74,16 @@ def test_missing_signatory_raises_error(input_dim, hidden_dim, monkeypatch):
 
 @pytest.mark.skipif(not HAS_SIGNATORY, reason="Requires 'signatory' library")
 def test_signature_initialization_and_config(input_dim, hidden_dim, default_config):
-    """Validates configuration parsing and proper Signature dimension calculation."""
+    """Validates configuration parsing and proper Logsignature dimension calculation."""
     model = SignatureBackend(input_dim, hidden_dim, config=default_config)
     
     assert model.depth == default_config['depth']
     assert model.window_length == default_config['window_length']
     
-    # Calculate expected signature channels
-    # For depth d and input channels c, the number of signature terms is:
-    # c + c^2 + ... + c^d
-    # With input_dim=4, depth=2: 4 + 4^2 = 20
-    expected_sig_channels = signatory.signature_channels(input_dim, default_config['depth'])
+    # Calculate expected logsignature channels
+    # Note: The backend augments input_dim with 1 extra channel for time!
+    augmented_dim = input_dim + 1
+    expected_sig_channels = signatory.logsignature_channels(augmented_dim, default_config['depth'])
     
     assert model.sig_channels == expected_sig_channels
     assert model.net[0].in_features == expected_sig_channels

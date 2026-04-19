@@ -81,20 +81,20 @@ def test_engine_empty_predictions_raises_error(task_a):
     with pytest.raises(RuntimeError, match="CRITICAL ERROR: Zero task predictions returned."):
         engine(empty_output, dummy_master)
 
-def test_engine_soft_target_loss_computation(task_a, batch_size, seq_len):
+def test_engine_focal_loss_computation(task_a, batch_size, seq_len):
     """
-    Validates the exact math of the continuous soft-target replacement.
+    Validates the exact math of the multi-class Focal Loss integration.
     Using a 1x1 tensor to manually calculate and compare the expected loss.
     """
     engine = HmoeLossEngine(tasks=[task_a], routing_penalty_weight=0.0)
     
-    # 1. Setup deterministic input logits [Batch=1, Seq=1, Classes=2 (Neg, Pos)]
-    # Logits: [0.0, 0.0] -> Softmax: [0.5, 0.5] -> LogSoftmax: [ln(0.5), ln(0.5)] ≈ [-0.693, -0.693]
+    # Setup deterministic input logits [Batch=1, Seq=1, Classes=2]
+    # Logits: [0.0, 0.0] -> Softmax probabilities: [0.5, 0.5]
     logits = torch.tensor([[[0.0, 0.0]]], requires_grad=True)
     
-    # 2. Setup a soft target of 0.8
-    # y = 0.8
-    targets = torch.tensor([[[0.8]]])
+    # Setup a hard target class index
+    # Since Focal Loss casts to .long(), 0.0 stays class 0.
+    targets = torch.tensor([[[0.0]]])
 
     predictions = MockHmoeOutput(
         task_logits={"task_a": MockHmoeTensor(logits)},
@@ -102,16 +102,16 @@ def test_engine_soft_target_loss_computation(task_a, batch_size, seq_len):
     )
     master_tensor = MockHmoeTensor(targets)
 
-    # 3. Calculate expected mathematically:
-    # log_p_pos = -0.693147, log_p_neg = -0.693147
-    # pos_loss = -(-0.693147) * 0.8 = 0.5545
-    # neg_loss = -(-0.693147) * (1.0 - 0.8) = 0.1386
-    # raw_loss = (pos_loss * pos_weight) + neg_loss
-    # raw_loss = (0.5545 * 2.0) + 0.1386 = 1.109 + 0.1386 = 1.2476
-    # num_pos = y.sum() = 0.8. Since it is < 1.0, clamp(min=1.0) makes it 1.0.
-    # weighted_loss = (1.2476 / 1.0) * loss_weight = 1.2476 * 1.0 = 1.2476
-
-    expected_loss_val = ( -torch.log(torch.tensor(0.5)) * 0.8 * 2.0 ) + ( -torch.log(torch.tensor(0.5)) * 0.2 )
+    # Calculate expected mathematically based on Focal Loss:
+    # ce_loss = -ln(0.5) ≈ 0.693147
+    # pt (prob of true class) = 0.5
+    # gamma = 2.0
+    # focal_loss = ((1 - pt) ** gamma) * ce_loss = (0.5 ** 2) * 0.693147 = 0.25 * 0.693147 = 0.173286
+    
+    ce_loss = -torch.log(torch.tensor(0.5))
+    pt = 0.5
+    gamma = 2.0
+    expected_loss_val = ((1.0 - pt) ** gamma) * ce_loss * task_a.loss_weight
     
     result = engine(predictions, master_tensor)
     
@@ -146,7 +146,7 @@ def test_engine_routing_penalty_integration(task_a, dummy_routing_loss):
     engine = HmoeLossEngine(tasks=[task_a], routing_penalty_weight=routing_weight)
 
     logits = torch.randn(1, 1, 2)
-    targets = torch.rand(1, 1, 1)
+    targets = torch.zeros(1, 1, 1)
 
     predictions = MockHmoeOutput(
         task_logits={"task_a": MockHmoeTensor(logits)},
@@ -169,8 +169,8 @@ def test_engine_routing_penalty_integration(task_a, dummy_routing_loss):
 
 def test_engine_zero_division_protection(task_a):
     """
-    Validates that a batch with absolutely zero positive targets does not
-    cause a NaN loss due to division by zero in the normalization step.
+    Validates that a batch handles uniform targets safely.
+    In the new Focal Loss layout, division by zero is handled naturally by .mean().
     """
     engine = HmoeLossEngine(tasks=[task_a])
     
@@ -184,7 +184,7 @@ def test_engine_zero_division_protection(task_a):
     )
     master_tensor = MockHmoeTensor(targets)
 
-    # If clamp(min=1.0) is working, this will not throw a NaN error
+    # Validate the engine processes it cleanly without throwing NaNs
     result = engine(predictions, master_tensor)
     
     assert not torch.isnan(result.total_loss)

@@ -272,10 +272,16 @@ def test_subtree_features_expert():
         assert features == [f1]
 
 def test_subtree_features_router():
-    """A router should recurse into branches, aggregate unique features, and sort them."""
+    """A router should recurse into branches, aggregate unique features, and sort them.
+    It must also include its own local features."""
+    
+    # Features embedded inside the child branches
     f_z = MagicMock(); f_z.name = "z"
     f_a = MagicMock(); f_a.name = "a"
     f_dup = MagicMock(); f_dup.name = "a" # Duplicate feature in another branch
+    
+    # Local feature defined strictly on the Router itself
+    f_local = MagicMock(); f_local.name = "router_local_feat"
     
     # Setup mock children with pre-defined subtree_features
     child1 = MagicMock()
@@ -284,7 +290,8 @@ def test_subtree_features_router():
     child2 = MagicMock()
     child2.subtree_features = [f_dup]
     
-    node = DummyNode()
+    # Instantiate DummyNode and explicitly set the new 'features' attribute
+    node = DummyNode(features=[f_local])
     node.branches = [child1, child2]
     
     with patch('hmoe2.nodes.HmoeNodeType') as mock_enum:
@@ -292,7 +299,9 @@ def test_subtree_features_router():
         
         features = node.subtree_features
         
-        # Should deduplicate "a" and sort alphabetically: ["a", "z"]
-        assert len(features) == 2
+        # Should deduplicate "a", include the local feature, and sort alphabetically: 
+        # ["a", "router_local_feat", "z"]
+        assert len(features) == 3
         assert features[0].name == "a"
-        assert features[1].name == "z"
+        assert features[1].name == "router_local_feat"
+        assert features[2].name == "z"

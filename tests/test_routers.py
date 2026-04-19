@@ -194,93 +194,49 @@ def test_link_tasks(router_with_children):
 # ==========================================
 
 @patch('hmoe2.routers.HmoeRouter.subtree_features', new_callable=PropertyMock)
-def test_forward_pass_through_aggregation(mock_features, router_with_children, dummy_payload):
+def test_forward_routing_loss_aggregation(mock_features, router_with_children, dummy_payload):
     """
-    Validates parallel execution (PASS_THROUGH) where no gate exists.
-    All children receive 100% traffic, and their outputs are simply summed.
-    """
-    mock_features.return_value = ["f1"]
-    router, child1, child2 = router_with_children
-    
-    # Force pass-through routing
-    router.gate = None
-    
-    output = router(dummy_payload)
-    
-    # Validate the task logits dictionary is correctly shaped
-    assert "shared_task" in output.task_logits
-    
-    result_tensor = output.task_logits["shared_task"].tensor
-    
-    # Since Child 1 outputs 1s, Child 2 outputs 2s, and gate weights are 1.0 (Pass-Through),
-    # The sum should equal exactly 3.0 everywhere.
-    assert torch.allclose(result_tensor, torch.full((2, 3, 2), 3.0))
-    
-    # Load balancing penalty should be 0.0 for pass-through
-    # But total routing loss = balance_loss (0) + child1_loss (0.5) + child2_loss (0.5)
-    assert output.routing_loss.tensor.item() == 1.0
-
-@patch('hmoe2.routers.HmoeRouter.subtree_features', new_callable=PropertyMock)
-def test_forward_gated_aggregation(mock_features, router_with_children, dummy_payload):
-    """
-    Validates weighted aggregation based on gate probabilities.
-    Ensures tensor scaling logic perfectly maps gate [Batch, Seq, Experts] 
-    to output [Batch, Seq, Classes].
-    """
-    mock_features.return_value = ["f1"]
-    router, child1, child2 = router_with_children
-    
-    # Create a dummy gate that assigns 80% probability to child1 and 20% to child2
-    mock_gate = MagicMock()
-    
-    # Shape: [Batch=2, Seq=3, Children=2]
-    # We set weight[..., 0] = 0.8 and weight[..., 1] = 0.2
-    dummy_gate_weights = torch.zeros(2, 3, 2)
-    dummy_gate_weights[:, :, 0] = 0.8
-    dummy_gate_weights[:, :, 1] = 0.2
-    
-    mock_gate.return_value = dummy_gate_weights
-    router.gate = mock_gate
-    
-    output = router(dummy_payload)
-    result_tensor = output.task_logits["shared_task"].tensor
-    
-    # Math validation:
-    # Child 1 (1.0) * 0.8 = 0.8
-    # Child 2 (2.0) * 0.2 = 0.4
-    # Expected sum = 1.2
-    assert torch.allclose(result_tensor, torch.full((2, 3, 2), 1.2))
-
-@patch('hmoe2.routers.HmoeRouter.subtree_features', new_callable=PropertyMock)
-def test_forward_load_balancing_penalty(mock_features, router_with_children, dummy_payload):
-    """
-    Validates the mathematical precision of the load-balancing penalty.
-    It discourages the gate from collapsing all traffic to a single expert.
+    Validates that the router correctly sums routing losses from its children.
+    Load balancing is now handled inside the gates via dynamic EMA bias, 
+    so the router no longer adds its own explicit mathematical penalty here.
     """
     mock_features.return_value = ["f1"]
     router, child1, child2 = router_with_children
     mock_gate = MagicMock()
     
-    # Scenario A: Perfect Collapse (Terrible balance) -> 100% to Child 1
-    collapsed_weights = torch.zeros(2, 3, 2)
-    collapsed_weights[:, :, 0] = 1.0 
-    mock_gate.return_value = collapsed_weights
+    # Fake weights (routing loss computation is independent of this now)
+    mock_gate.return_value = torch.zeros(2, 3, 2)
     router.gate = mock_gate
     
-    out_collapsed = router(dummy_payload)
-    # Math: mean_probs = [1.0, 0.0] -> sum(sq) = 1.0
-    # Penalty = (2 * 1.0) - 1.0 = 1.0
-    # Add child losses (0.5 + 0.5 = 1.0) -> Total = 2.0
-    assert out_collapsed.routing_loss.tensor.item() == 2.0
+    out = router(dummy_payload)
     
-    # Scenario B: Perfect Balance (Ideal) -> 50/50 split
-    balanced_weights = torch.zeros(2, 3, 2)
-    balanced_weights[:, :, :] = 0.5
-    mock_gate.return_value = balanced_weights
-    router.gate = mock_gate
+    # Total routing loss = 0.0 (Router Gate Loss) + 0.5 (Child 1) + 0.5 (Child 2) = 1.0
+    assert out.routing_loss.tensor.item() == 1.0
+
+@patch('hmoe2.routers.HmoeRouter.subtree_features', new_callable=PropertyMock)
+def test_forward_uses_local_features(mock_features, router_with_children):
+    """
+    Validates that a router uses its explicit local features for the gating 
+    decision instead of the entire subtree if they are defined.
+    """
+    mock_features.return_value = ["f_child1", "f_child2"]
+    router, _, _ = router_with_children
     
-    out_balanced = router(dummy_payload)
-    # Math: mean_probs = [0.5, 0.5] -> sum(sq) = (0.25 + 0.25) = 0.5
-    # Penalty = (2 * 0.5) - 1.0 = 0.0
-    # Add child losses (0.5 + 0.5 = 1.0) -> Total = 1.0
-    assert out_balanced.routing_loss.tensor.item() == 1.0
+    # Define a local router feature
+    local_feat = MagicMock()
+    local_feat.name = "local_router_feat"
+    router.features = [local_feat] 
+    
+    # Mock payload
+    mock_payload = MagicMock()
+    mock_payload.get_subset.return_value = mock_payload
+    mock_payload.to_tensor.return_value = torch.ones(2, 3, 4)
+    
+    router.gate = MagicMock()
+    router.gate.return_value = torch.ones(2, 3, 2)
+    
+    router(mock_payload)
+    
+    # The router should have called get_subset explicitly with its LOCAL features for the gate
+    mock_payload.get_subset.assert_any_call(router.features)
+

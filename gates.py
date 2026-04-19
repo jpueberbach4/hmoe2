@@ -2,70 +2,108 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List
+
 from hmoe2.tensor import HmoeTensor
 from hmoe2.backends import StrictCausalConv1d
 
 
 class HmoeGate(nn.Module):
-    """Stateless routing gate using a simple linear projection.
+    """Stateless routing gate with dynamic load balancing.
 
-    This gate computes routing probabilities independently for each timestep
-    without considering temporal dependencies. It is suitable for baseline
-    or purely reactive routing decisions.
+    Uses a linear projection to produce routing logits and applies a
+    dynamically updated bias term to encourage balanced expert utilization.
 
-    Attributes:
-        routing_head (nn.Linear): Linear layer producing routing logits.
-        noise_std (float): Standard deviation of optional noise (disabled by default).
+    Args:
+        input_dim (int): Input feature dimension.
+        num_children (int): Number of experts (routing targets).
     """
 
     def __init__(self, input_dim: int, num_children: int):
-        """Initializes the HmoeGate.
-
-        Args:
-            input_dim (int): Number of input features.
-            num_children (int): Number of child nodes (experts) to route to.
-        """
         super().__init__()
 
-        # Linear projection mapping input features to routing logits
+        # Linear projection from input features -> expert logits
         self.routing_head = nn.Linear(input_dim, num_children)
 
-        # Noise level for exploration (set to zero for deterministic behavior)
+        # Optional Gaussian noise for exploration during training
         self.noise_std = 0.0
 
+        # Running estimate of how much each expert is used (EMA)
+        self.register_buffer(
+            'expert_utilization',
+            torch.ones(num_children) / num_children
+        )
+
+        # Bias added to logits to correct imbalance
+        self.register_buffer(
+            'dynamic_bias',
+            torch.zeros(num_children)
+        )
+
+        # Target uniform utilization
+        self.target_utilization = 1.0 / num_children
+
+        # Learning rate for bias updates
+        self.bias_lr = 0.01
+
     def forward(self, payload_tensor: HmoeTensor) -> torch.Tensor:
-        """Computes routing weights for each child.
+        """Compute routing weights.
 
         Args:
-            payload_tensor (HmoeTensor): Input tensor wrapper.
+            payload_tensor (HmoeTensor): Input wrapper containing tensor data.
 
         Returns:
-            torch.Tensor: Routing weights of shape [Batch, Sequence, num_children].
+            torch.Tensor: Routing weights [B, T, num_children].
         """
-        # Convert structured payload into raw tensor format
+        # Extract raw tensor [B, T, D]
         raw_data = payload_tensor.to_tensor()
 
-        # Compute routing logits for each child node
+        # Compute raw routing logits
         routing_logits = self.routing_head(raw_data)
 
-        # Normalize logits into probabilities using softmax
+        # Add dynamic bias (outside gradient flow of routing_head)
+        routing_logits = routing_logits + self.dynamic_bias
+
+        # Inject noise for exploration (only during training)
+        if self.training and self.noise_std > 0.0:
+            noise = torch.randn_like(routing_logits) * self.noise_std
+            routing_logits = routing_logits + noise
+
+        # Convert logits -> probabilities
         routing_weights = F.softmax(routing_logits, dim=-1)
+
+        # Update utilization statistics and bias (no gradient)
+        if self.training:
+            # Average usage per expert across batch + time
+            batch_util = routing_weights.mean(dim=(0, 1)).detach()
+
+            # Exponential moving average update
+            self.expert_utilization = (
+                0.99 * self.expert_utilization + 0.01 * batch_util
+            )
+
+            # Compute deviation from target utilization
+            util_error = self.target_utilization - self.expert_utilization
+
+            # Adjust bias to encourage underused experts
+            self.dynamic_bias = self.dynamic_bias + self.bias_lr * util_error
 
         return routing_weights
 
 
 class HmoeGateTCN(nn.Module):
-    """Temporal routing gate using dilated causal convolutions.
+    """Temporal routing gate using causal convolutions.
 
-    This gate leverages a Temporal Convolutional Network (TCN) structure
-    to capture both short-term and long-term temporal dependencies before
-    making routing decisions.
+    Extracts temporal features using a TCN before computing routing logits.
+    Includes dynamic bias for load balancing.
 
-    Attributes:
-        noise_std (float): Standard deviation of noise for exploration.
-        conv_stack (nn.ModuleList): Stack of causal convolution layers.
-        dropout (nn.Dropout): Dropout layer for regularization.
-        routing_head (nn.Linear): Linear layer mapping hidden states to routing logits.
+    Args:
+        input_dim (int): Input feature dimension.
+        num_children (int): Number of experts.
+        hidden_dim (int): Hidden feature dimension.
+        kernel_size (int): Convolution kernel size.
+        dilations (List[int]): Dilation schedule.
+        noise_std (float): Noise std for exploration.
+        dropout_p (float): Dropout probability.
     """
 
     def __init__(
@@ -78,165 +116,176 @@ class HmoeGateTCN(nn.Module):
         noise_std: float = 0.0,
         dropout_p: float = 0.1
     ):
-        """Initializes the HmoeGateTCN.
-
-        Args:
-            input_dim (int): Number of input features.
-            num_children (int): Number of routing targets.
-            hidden_dim (int): Hidden representation size.
-            kernel_size (int): Convolution kernel size.
-            dilations (List[int]): Dilation factors for each layer.
-            noise_std (float): Noise level for stochastic routing.
-            dropout_p (float): Dropout probability.
-        """
         super().__init__()
-        # Store noise level for optional stochastic exploration
+
         self.noise_std = noise_std
 
-        # Initialize stack of causal convolution layers
+        # Stack of causal convolutions (TCN)
         self.conv_stack = nn.ModuleList()
 
-        # First layer transforms input dimension into hidden dimension
+        # First layer: input_dim -> hidden_dim
         self.conv_stack.append(
             StrictCausalConv1d(input_dim, hidden_dim, kernel_size, dilation=dilations[0])
         )
 
-        # Remaining layers preserve hidden dimension while increasing receptive field
+        # Subsequent residual layers
         for d in dilations[1:]:
             self.conv_stack.append(
                 StrictCausalConv1d(hidden_dim, hidden_dim, kernel_size, dilation=d)
             )
 
-        # Dropout layer to prevent overfitting
         self.dropout = nn.Dropout(p=dropout_p)
 
-        # Final linear layer mapping hidden states to routing logits
+        # Final projection to expert logits
         self.routing_head = nn.Linear(hidden_dim, num_children)
 
+        # Load balancing buffers
+        self.register_buffer('expert_utilization', torch.ones(num_children) / num_children)
+        self.register_buffer('dynamic_bias', torch.zeros(num_children))
+        self.target_utilization = 1.0 / num_children
+        self.bias_lr = 0.01
+
     def forward(self, payload_tensor: HmoeTensor) -> torch.Tensor:
-        """Computes routing weights using temporal convolution.
+        """Compute routing weights with temporal context.
 
         Args:
             payload_tensor (HmoeTensor): Input tensor wrapper.
 
         Returns:
-            torch.Tensor: Routing weights of shape [Batch, Sequence, num_children].
+            torch.Tensor: Routing weights [B, T, num_children].
         """
-        # Convert structured payload into tensor
-        raw_data = payload_tensor.to_tensor()
+        # Convert to [B, C, T] for Conv1d
+        x = payload_tensor.to_tensor().transpose(1, 2)
 
-        # Rearrange dimensions to match Conv1d input format
-        x = raw_data.transpose(1, 2)
-
-        # Apply first convolution layer (dimension transformation)
+        # First convolution (no residual)
         x = self.conv_stack[0](x)
         x = F.gelu(x)
         x = self.dropout(x)
 
-        # Apply remaining layers with residual connections
+        # Residual TCN blocks
         for conv in self.conv_stack[1:]:
-            residual = x
+            residual = x  # save input for skip connection
+
             x = conv(x)
             x = F.gelu(x)
             x = self.dropout(x)
 
-            # Add residual connection to preserve temporal information
-            x = x + residual
+            x = x + residual  # residual addition
 
-        # Restore original tensor layout
+        # Back to [B, T, D]
         x = x.transpose(1, 2)
 
-        # Compute routing logits from processed features
+        # Compute routing logits
         routing_logits = self.routing_head(x)
 
-        # Optionally inject noise during training for exploration
-        if self.training and self.noise_std > 0.0:
-            noise = torch.randn_like(routing_logits) * self.noise_std
-            routing_logits = routing_logits + noise
+        # Add dynamic bias
+        routing_logits = routing_logits + self.dynamic_bias
 
-        # Convert logits into probability distribution
+        # Optional noise
+        if self.training and self.noise_std > 0.0:
+            routing_logits = routing_logits + torch.randn_like(routing_logits) * self.noise_std
+
+        # Softmax over experts
         routing_weights = F.softmax(routing_logits, dim=-1)
+
+        # Update utilization + bias
+        if self.training:
+            batch_util = routing_weights.mean(dim=(0, 1)).detach()
+
+            self.expert_utilization = (
+                0.99 * self.expert_utilization + 0.01 * batch_util
+            )
+
+            util_error = self.target_utilization - self.expert_utilization
+            self.dynamic_bias = self.dynamic_bias + self.bias_lr * util_error
 
         return routing_weights
 
 
 class HmoeGateTopK(nn.Module):
-    """Sparse routing gate using Top-K selection.
+    """Sparse Top-K routing gate with dynamic load balancing.
 
-    This gate enforces sparsity by selecting only the top-K most confident
-    routing logits and masking all others, encouraging expert specialization.
+    Only the top-k experts receive probability mass.
 
-    Attributes:
-        routing_head (nn.Linear): Linear layer producing routing logits.
-        k (int): Number of top experts to select.
-        noise_std (float): Noise level for stochastic exploration.
+    Args:
+        input_dim (int): Input feature dimension.
+        num_children (int): Number of experts.
+        k (int): Number of active experts.
+        noise_std (float): Noise std for exploration.
     """
 
     def __init__(self, input_dim: int, num_children: int, k: int = 1, noise_std: float = 0.1):
-        """Initializes the HmoeGateTopK.
-
-        Args:
-            input_dim (int): Number of input features.
-            num_children (int): Number of routing targets.
-            k (int): Number of top experts to retain.
-            noise_std (float): Noise level for stochastic routing.
-        """
         super().__init__()
 
-        # Linear projection for routing logits
         self.routing_head = nn.Linear(input_dim, num_children)
-
-        # Ensure k does not exceed number of children
         self.k = min(k, num_children)
-
-        # Noise level for exploration
         self.noise_std = noise_std
 
+        # Load balancing buffers
+        self.register_buffer('expert_utilization', torch.ones(num_children) / num_children)
+        self.register_buffer('dynamic_bias', torch.zeros(num_children))
+        self.target_utilization = 1.0 / num_children
+        self.bias_lr = 0.01
+
     def forward(self, payload_tensor: HmoeTensor) -> torch.Tensor:
-        """Computes sparse routing weights using Top-K masking.
+        """Compute sparse routing weights.
 
         Args:
             payload_tensor (HmoeTensor): Input tensor wrapper.
 
         Returns:
-            torch.Tensor: Sparse routing weights.
+            torch.Tensor: Sparse routing weights [B, T, num_children].
         """
-        # Convert payload to tensor
         raw_data = payload_tensor.to_tensor()
 
-        # Compute routing logits
+        # Compute logits
         routing_logits = self.routing_head(raw_data)
 
-        # Optionally add noise during training
-        if self.training and self.noise_std > 0.0:
-            noise = torch.randn_like(routing_logits) * self.noise_std
-            routing_logits = routing_logits + noise
+        # Apply dynamic bias BEFORE Top-K selection
+        routing_logits = routing_logits + self.dynamic_bias
 
-        # Select top-K logits and their indices
+        # Add exploration noise
+        if self.training and self.noise_std > 0.0:
+            routing_logits = routing_logits + torch.randn_like(routing_logits) * self.noise_std
+
+        # Select top-k experts per token
         topk_logits, topk_indices = torch.topk(routing_logits, self.k, dim=-1)
 
-        # Initialize mask with negative infinity
+        # Create mask filled with -inf (suppresses non-topk)
         mask = torch.full_like(routing_logits, float('-inf'))
 
-        # Place top-K logits into the mask at their respective indices
+        # Scatter top-k logits into mask
         mask.scatter_(-1, topk_indices, topk_logits)
 
-        # Apply softmax; masked values become zero probability
+        # Softmax over masked logits
         routing_weights = F.softmax(mask, dim=-1)
+
+        # Update utilization based on actual routed traffic
+        if self.training:
+            batch_util = routing_weights.mean(dim=(0, 1)).detach()
+
+            self.expert_utilization = (
+                0.99 * self.expert_utilization + 0.01 * batch_util
+            )
+
+            util_error = self.target_utilization - self.expert_utilization
+            self.dynamic_bias = self.dynamic_bias + self.bias_lr * util_error
 
         return routing_weights
 
 
 class HmoeGateGRU(nn.Module):
-    """Stateful routing gate using GRU for temporal modeling.
+    """Stateful routing gate using GRU.
 
-    This gate leverages a GRU to track temporal dynamics and generate
-    routing decisions based on sequential context.
+    Captures temporal dependencies before computing routing decisions.
 
-    Attributes:
-        noise_std (float): Noise level for exploration.
-        gru (nn.GRU): GRU module for sequence modeling.
-        routing_head (nn.Linear): Linear layer mapping hidden states to routing logits.
+    Args:
+        input_dim (int): Input feature dimension.
+        num_children (int): Number of experts.
+        hidden_dim (int): GRU hidden size.
+        num_layers (int): Number of GRU layers.
+        dropout_p (float): Dropout probability.
+        noise_std (float): Noise std for exploration.
     """
 
     def __init__(
@@ -248,22 +297,11 @@ class HmoeGateGRU(nn.Module):
         dropout_p: float = 0.1,
         noise_std: float = 0.0
     ):
-        """Initializes the HmoeGateGRU.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            num_children (int): Number of routing targets.
-            hidden_dim (int): Hidden state dimension.
-            num_layers (int): Number of GRU layers.
-            dropout_p (float): Dropout probability.
-            noise_std (float): Noise level for stochastic routing.
-        """
         super().__init__()
 
-        # Store noise level for optional stochasticity
         self.noise_std = noise_std
 
-        # Initialize GRU for temporal feature extraction
+        # GRU encoder
         self.gru = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -272,33 +310,51 @@ class HmoeGateGRU(nn.Module):
             dropout=dropout_p if num_layers > 1 else 0.0
         )
 
-        # Linear projection from hidden state to routing logits
+        # Projection to expert logits
         self.routing_head = nn.Linear(hidden_dim, num_children)
 
+        # Load balancing buffers
+        self.register_buffer('expert_utilization', torch.ones(num_children) / num_children)
+        self.register_buffer('dynamic_bias', torch.zeros(num_children))
+        self.target_utilization = 1.0 / num_children
+        self.bias_lr = 0.01
+
     def forward(self, payload_tensor: HmoeTensor) -> torch.Tensor:
-        """Computes routing weights using GRU-based temporal context.
+        """Compute routing weights using GRU features.
 
         Args:
             payload_tensor (HmoeTensor): Input tensor wrapper.
 
         Returns:
-            torch.Tensor: Routing weights.
+            torch.Tensor: Routing weights [B, T, num_children].
         """
-        # Convert payload into raw tensor format
         raw_data = payload_tensor.to_tensor()
 
-        # Process sequence through GRU to capture temporal dependencies
+        # Process sequence through GRU
         out, _ = self.gru(raw_data)
 
-        # Compute routing logits from GRU outputs
+        # Compute routing logits
         routing_logits = self.routing_head(out)
 
-        # Optionally add noise during training
-        if self.training and self.noise_std > 0.0:
-            noise = torch.randn_like(routing_logits) * self.noise_std
-            routing_logits = routing_logits + noise
+        # Apply dynamic bias
+        routing_logits = routing_logits + self.dynamic_bias
 
-        # Normalize logits into probabilities
+        # Optional exploration noise
+        if self.training and self.noise_std > 0.0:
+            routing_logits = routing_logits + torch.randn_like(routing_logits) * self.noise_std
+
+        # Convert to probabilities
         routing_weights = F.softmax(routing_logits, dim=-1)
+
+        # Update utilization + bias
+        if self.training:
+            batch_util = routing_weights.mean(dim=(0, 1)).detach()
+
+            self.expert_utilization = (
+                0.99 * self.expert_utilization + 0.01 * batch_util
+            )
+
+            util_error = self.target_utilization - self.expert_utilization
+            self.dynamic_bias = self.dynamic_bias + self.bias_lr * util_error
 
         return routing_weights

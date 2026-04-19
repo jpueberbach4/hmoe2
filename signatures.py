@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from typing import Dict
 
 try:
@@ -11,16 +10,23 @@ except ImportError:
 
 
 class SignatureBackend(nn.Module):
-    """Signature-based backend for geometric sequence features.
+    """Logsignature-based sequence encoder with time augmentation.
 
-    Computes the streamed path signature of an input sequence and projects
-    it into a lower-dimensional hidden space via an MLP. The signature
-    captures ordering and higher-order interactions in a time-warp invariant way.
+    This backend:
+    - Extracts sliding windows from the input sequence
+    - Augments each window with a normalized time dimension
+    - Computes logsignatures (capturing path geometry)
+    - Projects the resulting features into a hidden space
 
-    Attributes:
-        depth (int): Truncation depth of the signature transform.
-        sig_channels (int): Number of signature output channels.
-        net (nn.Sequential): Projection network.
+    Key advantages:
+    - Captures higher-order temporal interactions (beyond standard RNN/Conv)
+    - Encodes path-dependent structure (ordering matters)
+    - Time augmentation enables velocity/momentum representation
+
+    Args:
+        input_dim (int): Number of input features.
+        hidden_dim (int): Output feature dimension.
+        config (Dict): Configuration dictionary.
     """
 
     def __init__(
@@ -29,23 +35,12 @@ class SignatureBackend(nn.Module):
         hidden_dim: int,
         config: Dict = {}
     ):
-        """Initializes the SignatureBackend.
-
-        Args:
-            input_dim (int): Number of input features per timestep.
-            hidden_dim (int): Output hidden dimension.
-            depth (int, optional): Signature truncation depth. Defaults to 2.
-            dropout_p (float, optional): Dropout probability. Defaults to 0.2.
-
-        Raises:
-            ImportError: If `signatory` is not installed.
-        """
         super().__init__()
 
-        # Config
-        depth = config.get('depth', 2)
+        # Configuration parameters
+        self.depth = config.get('depth', 3)  # logsignature truncation depth
         dropout_p = config.get('dropout', 0.2)
-        window_length = config.get('window_length', 80)
+        self.window_length = config.get('window_length', 60)
 
         # Ensure dependency is available
         if signatory is None:
@@ -54,14 +49,16 @@ class SignatureBackend(nn.Module):
                 "Please run: pip install signatory"
             )
 
-        # Store configuration
-        self.depth = depth
-        self.window_length = window_length
+        # Add 1 dimension for time augmentation
+        self.augmented_dim = input_dim + 1
 
-        # Compute signature output dimensionality
-        self.sig_channels = signatory.signature_channels(input_dim, depth)
+        # Compute logsignature feature size for augmented input
+        self.sig_channels = signatory.logsignature_channels(
+            self.augmented_dim,
+            self.depth
+        )
 
-        # Projection MLP
+        # Projection network to map logsignature -> hidden space
         self.net = nn.Sequential(
             nn.Linear(self.sig_channels, hidden_dim * 2),
             nn.GELU(),
@@ -71,41 +68,86 @@ class SignatureBackend(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes the input path through a Rolling Window Signature transform.
+        """Compute logsignature features for input sequence.
 
         Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, C].
 
         Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
+            torch.Tensor: Encoded tensor [B, T, hidden_dim].
         """
+        # Extract dimensions
         b, s, c = x.size()
-        
-        # The lookback window: Calculate the geometry of the last 60 candles.
-        # (You can move this to __init__ if you want it configurable)
+        device = x.device
         window_length = self.window_length
-        
-        # Strict Causal Padding
-        # Pad the left side so the first 60 candles don't look into the future
+
+        # ---------------------------------------------------------------------
+        # 1. CAUSAL PADDING
+        # ---------------------------------------------------------------------
+        # Convert to [B, C, T] for Conv-style operations
         x_t = x.transpose(1, 2)
-        x_padded = F.pad(x_t, (window_length - 1, 0), mode="replicate")
-        
-        # Extract Sliding Windows
-        # Output shape: [Batch, Channels, Sequence, Window]
-        windows = x_padded.unfold(dimension=2, size=window_length, step=1)
-        
-        # Reshape for the Signatory Engine
-        # Signatory expects [Batch, Seq, Channels]. 
-        # We flatten our batch and sequence dimensions to process all windows in parallel.
-        windows = windows.permute(0, 2, 3, 1).contiguous() # [Batch, Seq, Window, Channels]
+
+        # Pad left so each timestep has a full window (strictly causal)
+        # replicate padding preserves boundary values
+        x_padded = F.pad(
+            x_t,
+            (window_length - 1, 0),
+            mode="replicate"
+        )
+
+        # ---------------------------------------------------------------------
+        # 2. SLIDING WINDOW EXTRACTION
+        # ---------------------------------------------------------------------
+        # Extract overlapping windows along time dimension
+        # Output: [B, C, T, window_length]
+        windows = x_padded.unfold(
+            dimension=2,
+            size=window_length,
+            step=1
+        )
+
+        # Rearrange to [B, T, window_length, C]
+        windows = windows.permute(0, 2, 3, 1).contiguous()
+
+        # Flatten batch and sequence for efficient processing
+        # Shape: [(B*T), window_length, C]
         flat_windows = windows.view(b * s, window_length, c)
-        
-        # Calculate localized Signatures!
-        # Notice stream=True is REMOVED. We are calculating the fixed signature 
-        # of the 60-candle window, not an infinite stream.
-        sig_path = signatory.signature(flat_windows, depth=self.depth, basepoint=True)
-        
-        # 5. Reshape back to expected output and project
+
+        # ---------------------------------------------------------------------
+        # 3. TIME AUGMENTATION
+        # ---------------------------------------------------------------------
+        # Create normalized time vector [0, 1]
+        t = torch.linspace(
+            0,
+            1,
+            steps=window_length,
+            device=device
+        )
+
+        # Expand to match batch*sequence dimension
+        # Shape: [(B*T), window_length, 1]
+        t = t.view(1, window_length, 1).expand(b * s, -1, -1)
+
+        # Concatenate time with features
+        # Shape: [(B*T), window_length, C+1]
+        augmented_windows = torch.cat([t, flat_windows], dim=-1)
+
+        # ---------------------------------------------------------------------
+        # 4. LOGSIGNATURE COMPUTATION
+        # ---------------------------------------------------------------------
+        # Computes path signature in log-space
+        # Captures geometric structure of the sequence path
+        sig_path = signatory.logsignature(
+            augmented_windows,
+            depth=self.depth,
+            basepoint=True  # includes starting reference point
+        )
+
+        # ---------------------------------------------------------------------
+        # 5. RESHAPE + PROJECTION
+        # ---------------------------------------------------------------------
+        # Restore original batch/sequence structure
         sig_path = sig_path.view(b, s, -1)
-        
+
+        # Project to hidden dimension
         return self.net(sig_path)

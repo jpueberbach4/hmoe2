@@ -2,211 +2,175 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
 from typing import Dict
 
-# Map signature as a backend (so it can get imported from backends)
 from hmoe2.signatures import SignatureBackend
 from hmoe2.motifs import MotifsBackend
+from hmoe2.snn import SnnBackend
+
 
 class StrictCausalConv1d(nn.Module):
-    """Implements a strictly causal 1D convolution layer.
+    """Strictly causal 1D convolution using explicit left padding.
 
-    This layer ensures that the convolution operation does not incorporate
-    any future information (i.e., no lookahead bias). It achieves this by
-    applying symmetric padding and then removing the extra elements that
-    correspond to future timesteps.
+    Ensures that output at time t only depends on inputs <= t.
 
-    Attributes:
-        causal_padding (int): Amount of padding applied to enforce causality.
-        conv (nn.Conv1d): Underlying convolutional layer.
+    Args:
+        in_channels (int): Number of input channels.
+        out_channels (int): Number of output channels.
+        kernel_size (int): Size of convolution kernel.
+        dilation (int): Dilation factor.
     """
 
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, dilation: int):
-        """Initializes the StrictCausalConv1d module.
-
-        Args:
-            in_channels (int): Number of input channels.
-            out_channels (int): Number of output channels.
-            kernel_size (int): Size of the convolution kernel.
-            dilation (int): Dilation factor for the convolution.
-        """
         super().__init__()
-
-        # Compute the amount of padding required so that the convolution
-        # only depends on current and past inputs (causal structure)
         self.causal_padding = (kernel_size - 1) * dilation
 
-        # Define a standard Conv1d layer with symmetric padding applied
         self.conv = nn.Conv1d(
             in_channels,
             out_channels,
             kernel_size,
-            padding=self.causal_padding,
+            padding=0,
             dilation=dilation
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Applies the causal convolution to the input tensor.
+        """Apply causal convolution.
 
         Args:
-            x (torch.Tensor): Input tensor of shape [Batch, Channels, Sequence].
+            x (torch.Tensor): Input tensor of shape [B, C, T].
 
         Returns:
-            torch.Tensor: Output tensor with strictly causal structure.
+            torch.Tensor: Output tensor after convolution.
         """
-        # Apply convolution with symmetric padding
-        out = self.conv(x)
+        if self.causal_padding > 0:
+            x = F.pad(x, (self.causal_padding, 0))  # left-pad only
 
-        # Remove the trailing elements that correspond to "future" context
-        # introduced by padding, ensuring strict causality
-        return out[:, :, :-self.causal_padding] if self.causal_padding > 0 else out
+        return self.conv(x)
 
 
 class LinearBackend(nn.Module):
-    """Feedforward backend with no temporal memory.
+    """Feedforward backend without temporal modeling.
 
-    This module processes each timestep independently using fully connected
-    layers. It is suitable for scenarios where no sequential dependency is required.
+    Implements a symmetric pre-norm MLP with GELU activations.
 
-    Attributes:
-        net (nn.Sequential): Sequential stack of linear, activation, and normalization layers.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden/output dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the LinearBackend module.
-
-        Args:
-            input_dim (int): Dimensionality of input features.
-            hidden_dim (int): Dimensionality of hidden representation.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
-
-        # Config
+        config = config or {}
         dropout_p = config.get('dropout', 0.2)
-        # Define a simple feedforward network with normalization and activation
+
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
             nn.LayerNorm(hidden_dim),
+            nn.GELU(),
             nn.Dropout(p=dropout_p),
+
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(p=dropout_p),
         )
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes the input tensor through the feedforward network.
+        """Forward pass.
 
         Args:
-            x (torch.Tensor): Input tensor of shape [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, D] or [B, D].
 
         Returns:
-            torch.Tensor: Output tensor of shape [Batch, Sequence, Hidden].
+            torch.Tensor: Transformed tensor.
         """
-        # Apply the feedforward network independently across timesteps
         return self.net(x)
 
 
 class TcnBackend(nn.Module):
-    """Temporal Convolutional Network backend with residual connections.
+    """Temporal Convolutional Network with causal convolutions.
 
-    This module applies a stack of dilated causal convolutions to capture
-    temporal dependencies at multiple scales, with residual connections
-    to stabilize training.
+    Uses dilated convolutions with residual connections and pre-normalization.
 
-    Attributes:
-        convs (nn.ModuleList): List of causal convolution layers.
-        dropout (nn.Dropout): Dropout layer for regularization.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden/output dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the TcnBackend module.
-
-        Args:
-            input_dim (int): Dimensionality of input features.
-            hidden_dim (int): Dimensionality of hidden representation.
-            dilations (list): List of dilation factors for each layer.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
+        config = config or {}
 
-        # Config
-        dilations = config.get('dilations', [1,2,4,8])
+        dilations = config.get('dilations', [1, 2, 4, 8])
         dropout_p = config.get('dropout', 0.2)
-  
-        # Initialize a list to hold convolutional layers
+        kernel_size = config.get('kernel_size', 3)
+
         self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
 
-        # First layer maps input dimension to hidden dimension
-        self.convs.append(StrictCausalConv1d(input_dim, hidden_dim, kernel_size=3, dilation=dilations[0]))
+        # First layer maps input_dim -> hidden_dim
+        self.convs.append(
+            StrictCausalConv1d(input_dim, hidden_dim, kernel_size, dilations[0])
+        )
+        self.norms.append(nn.LayerNorm(hidden_dim))
 
-        # Subsequent layers maintain hidden dimension
+        # Residual blocks keep hidden_dim constant
         for d in dilations[1:]:
-            self.convs.append(StrictCausalConv1d(hidden_dim, hidden_dim, kernel_size=3, dilation=d))
+            self.convs.append(
+                StrictCausalConv1d(hidden_dim, hidden_dim, kernel_size, d)
+            )
+            self.norms.append(nn.LayerNorm(hidden_dim))
 
-        # Dropout for regularization
         self.dropout = nn.Dropout(p=dropout_p)
+        self.final_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes the input through the TCN layers.
+        """Forward pass.
 
         Args:
-            x (torch.Tensor): Input tensor of shape [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, D].
 
         Returns:
-            torch.Tensor: Output tensor of shape [Batch, Sequence, Hidden].
+            torch.Tensor: Output tensor [B, T, D].
         """
-        # Transpose to match Conv1d expected input format
-        x = x.transpose(1, 2)
-
-        # Apply first convolution layer (dimension-changing)
-        x = self.convs[0](x)
+        # First convolution (no residual)
+        x_conv = self.convs[0](x.transpose(1, 2)).transpose(1, 2)
+        x = self.norms[0](x_conv)
         x = F.gelu(x)
         x = self.dropout(x)
 
-        # Apply remaining layers with residual connections
-        for conv in self.convs[1:]:
+        # Residual blocks
+        for conv, norm in zip(self.convs[1:], self.norms[1:]):
             residual = x
-            x = conv(x)
+
+            x_conv = conv(x.transpose(1, 2)).transpose(1, 2)
+            x = norm(x_conv)
             x = F.gelu(x)
             x = self.dropout(x)
 
-            # Add residual connection to preserve gradient flow
-            x = x + residual
+            x = x + residual  # residual connection
 
-        # Transpose back to original format
-        return x.transpose(1, 2)
+        return self.final_norm(x)
 
 
 class GruBackend(nn.Module):
-    """GRU-based sequential model for temporal dependencies.
+    """GRU-based sequential model.
 
-    This module uses a multi-layer GRU to capture sequential patterns,
-    followed by dropout for regularization.
-
-    Attributes:
-        gru (nn.GRU): GRU layer.
-        output_dropout (nn.Dropout): Dropout applied to outputs.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden state dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the GruBackend module.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            hidden_dim (int): Hidden state dimension.
-            num_layers (int): Number of GRU layers.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
+        config = config or {}
 
-        # Config
         num_layers = config.get('num_layers', 2)
         dropout_p = config.get('dropout', 0.2)
 
-        # Initialize GRU with optional inter-layer dropout
         self.gru = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -215,212 +179,157 @@ class GruBackend(nn.Module):
             dropout=dropout_p if num_layers > 1 else 0.0
         )
 
-        # Dropout applied to GRU outputs
         self.output_dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes the input through the GRU.
+        """Forward pass.
 
         Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, D].
 
         Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
+            torch.Tensor: Output tensor [B, T, H].
         """
-        # Pass input through GRU
         out, _ = self.gru(x)
-
-        # Apply dropout to reduce overfitting
-        out = self.output_dropout(out)
-
-        return out
+        return self.output_dropout(out)
 
 
 class CausalTransformerBackend(nn.Module):
     """Transformer encoder with causal masking and sinusoidal embeddings.
 
-    This module applies a Transformer encoder while enforcing causality
-    via masking and augmenting inputs with positional encodings.
-
-    Attributes:
-        hidden_dim (int): Hidden dimension size.
-        input_proj (nn.Linear): Input projection layer.
-        transformer (nn.TransformerEncoder): Transformer encoder stack.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Model dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the CausalTransformerBackend module.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            hidden_dim (int): Hidden representation dimension.
-            num_layers (int): Number of transformer layers.
-            nheads (int): Number of attention heads.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
-        
-        # Config
+        config = config or {}
+
         num_layers = config.get('num_layers', 2)
         nheads = config.get('nheads', 4)
         dropout_p = config.get('dropout', 0.2)
 
         self.hidden_dim = hidden_dim
-
-        # Linear projection to match transformer dimension
         self.input_proj = nn.Linear(input_dim, hidden_dim)
 
-        # Define transformer encoder layers
-        encoder_layers = nn.TransformerEncoderLayer(
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=nheads,
             dim_feedforward=hidden_dim * 4,
             dropout=dropout_p,
-            batch_first=True
+            activation=F.gelu,
+            batch_first=True,
+            norm_first=True,
         )
 
-        # Stack multiple encoder layers
-        self.transformer = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
     def _get_sinusoidal_embeddings(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Generates sinusoidal positional embeddings.
+        """Generate sinusoidal positional encodings.
 
         Args:
             seq_len (int): Sequence length.
-            device (torch.device): Device for tensor allocation.
+            device (torch.device): Target device.
 
         Returns:
-            torch.Tensor: Positional embeddings of shape [1, Seq, Hidden].
+            torch.Tensor: Positional encodings [1, T, D].
         """
-        # Generate position indices
         position = torch.arange(seq_len, dtype=torch.float, device=device).unsqueeze(1)
 
-        # Compute scaling factors for sinusoidal frequencies
         div_term = torch.exp(
             torch.arange(0, self.hidden_dim, 2).float() *
             (-math.log(10000.0) / self.hidden_dim)
         ).to(device)
 
-        # Initialize positional encoding tensor
         pe = torch.zeros(1, seq_len, self.hidden_dim, device=device)
-
-        # Apply sine to even indices and cosine to odd indices
         pe[0, :, 0::2] = torch.sin(position * div_term)
         pe[0, :, 1::2] = torch.cos(position * div_term)
 
         return pe
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes input through the transformer encoder.
+        """Forward pass.
 
         Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, D].
 
         Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
+            torch.Tensor: Output tensor [B, T, H].
         """
         seq_len = x.size(1)
 
-        # Project input and add positional encoding
         x = self.input_proj(x)
         x = x + self._get_sinusoidal_embeddings(seq_len, x.device)
 
-        # Generate causal mask to prevent attention to future tokens
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(
+            seq_len, device=x.device
+        )
 
-        # Apply transformer encoder with causal masking
-        return self.transformer(x, mask=causal_mask, is_causal=True)
+        return self.transformer(x, mask=causal_mask)
 
 
 class GatedResidualBackend(nn.Module):
-    """Feedforward network with gated residual connections.
+    """Feedforward network with gated residual connections (GLU).
 
-    This module uses a Gated Linear Unit (GLU) to dynamically control
-    feature flow, combined with residual connections and normalization.
+    Uses pre-normalization and a gated linear unit for modulation.
 
-    Attributes:
-        input_proj (nn.Linear): Input projection layer.
-        net (nn.Sequential): Feedforward transformation layers.
-        dropout (nn.Dropout): Dropout layer.
-        layer_norm (nn.LayerNorm): Normalization layer.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden/output dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the GatedResidualBackend module.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            hidden_dim (int): Hidden representation dimension.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
-
-        # Config
+        config = config or {}
         dropout_p = config.get('dropout', 0.2)
 
-        # Project input to hidden dimension
         self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
 
-        # Define feedforward network
         self.net = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ELU(),
+            nn.GELU(),
+            nn.Dropout(dropout_p),
             nn.Linear(hidden_dim, hidden_dim * 2),
         )
 
-        self.dropout = nn.Dropout(dropout_p)
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes input with gated residual connections.
+        """Forward pass.
 
         Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
+            x (torch.Tensor): Input tensor [B, T, D].
 
         Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
+            torch.Tensor: Output tensor [B, T, H].
         """
-        # Project input for residual connection
-        residual = self.input_proj(x)
+        residual = self.input_proj(x)  # match dimensions
 
-        # Apply feedforward transformation
-        x = self.net(residual)
-        x = self.dropout(x)
+        branch = self.layer_norm(residual)  # pre-norm
+        branch = self.net(branch)
+        branch = F.glu(branch, dim=-1)  # gating
 
-        # Apply GLU to split and gate features
-        x = F.glu(x, dim=-1)
-
-        # Combine with residual and normalize
-        return self.layer_norm(x + residual)
+        return residual + branch  # residual addition
 
 
 class LstmBackend(nn.Module):
-    """LSTM-based sequential model for long-term dependencies.
+    """LSTM-based sequential model.
 
-    This module uses an LSTM network to model long-range temporal patterns,
-    followed by dropout for regularization.
-
-    Attributes:
-        lstm (nn.LSTM): LSTM layer.
-        output_dropout (nn.Dropout): Dropout layer.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden state dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the LstmBackend module.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            hidden_dim (int): Hidden state dimension.
-            num_layers (int): Number of LSTM layers.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
-        
-        # Config
+        config = config or {}
+
         num_layers = config.get('num_layers', 2)
         dropout_p = config.get('dropout', 0.2)
 
-        # Initialize LSTM with optional dropout between layers
         self.lstm = nn.LSTM(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -429,54 +338,30 @@ class LstmBackend(nn.Module):
             dropout=dropout_p if num_layers > 1 else 0.0
         )
 
-        # Output dropout layer
         self.output_dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes input through the LSTM.
-
-        Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
-
-        Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
-        """
-        # Apply LSTM and discard hidden/cell states
+        """Forward pass."""
         out, _ = self.lstm(x)
+        return self.output_dropout(out)
 
-        # Apply dropout to outputs
-        out = self.output_dropout(out)
 
-        return out
-    
 class RnnBackend(nn.Module):
     """Vanilla RNN-based sequential model.
-    
-    This module uses a standard Elman Recurrent Neural Network. It is computationally 
-    lighter than GRU or LSTM, making it highly efficient for short-term sequential 
-    dependencies, though it may struggle with long-range vanishing gradients.
 
-    Attributes:
-        rnn (nn.RNN): The vanilla RNN layer.
-        output_dropout (nn.Dropout): Dropout applied to outputs.
+    Args:
+        input_dim (int): Input feature dimension.
+        hidden_dim (int): Hidden state dimension.
+        config (Dict, optional): Configuration dict.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = {}):
-        """Initializes the RnnBackend module.
-
-        Args:
-            input_dim (int): Input feature dimension.
-            hidden_dim (int): Hidden state dimension.
-            num_layers (int): Number of RNN layers.
-            dropout_p (float): Dropout probability.
-        """
+    def __init__(self, input_dim: int, hidden_dim: int, config: Dict = None):
         super().__init__()
-        
-        # Config
+        config = config or {}
+
         num_layers = config.get('num_layers', 2)
         dropout_p = config.get('dropout', 0.2)
 
-        # Initialize Vanilla RNN with optional inter-layer dropout
         self.rnn = nn.RNN(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -485,22 +370,9 @@ class RnnBackend(nn.Module):
             dropout=dropout_p if num_layers > 1 else 0.0
         )
 
-        # Output dropout layer
         self.output_dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Processes input through the vanilla RNN.
-
-        Args:
-            x (torch.Tensor): Input tensor [Batch, Sequence, Features].
-
-        Returns:
-            torch.Tensor: Output tensor [Batch, Sequence, Hidden].
-        """
-        # Apply RNN and discard the final hidden state
+        """Forward pass."""
         out, _ = self.rnn(x)
-
-        # Apply dropout to outputs
-        out = self.output_dropout(out)
-
-        return out
+        return self.output_dropout(out)

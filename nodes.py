@@ -186,6 +186,10 @@ class HmoeNode(nn.Module, ABC):
         if node_type == 'ROUTER':
             router = HmoeRouter(name=name, config=config)
 
+            # PARSE LOKALE ROUTER FEATURES (Maakt gespecialiseerde routing mogelijk)
+            parsed_features = [parse_feature(f) for f in config.get('features', [])]
+            router.features = parsed_features
+
             # Recursively build child nodes
             child_configs = config.get('children', [])
             for c in child_configs:
@@ -262,6 +266,10 @@ class HmoeNode(nn.Module, ABC):
         feature_dict = {}
 
         if self.type == HmoeNodeType.ROUTER:
+            # FIX: Zorg ervoor dat de data-loader ook de eigen features van de Router ophaalt!
+            for f in self.features:
+                feature_dict[f.name] = f
+                
             for child in getattr(self, 'branches', []):
                 for f in child.subtree_features:
                     if f.name not in feature_dict:
@@ -269,5 +277,3 @@ class HmoeNode(nn.Module, ABC):
 
         # Return features sorted by name for consistency
         return sorted(feature_dict.values(), key=lambda f: f.name)
-
-

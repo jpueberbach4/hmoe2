@@ -17,75 +17,78 @@ from hmoe2.gates import (
 
 @dataclass(eq=False)
 class HmoeRouter(HmoeNode):
-    """Routing node for hierarchical Mixture-of-Experts.
+    """Hierarchical routing node for Mixture-of-Experts.
 
-    This node dynamically routes input data to multiple child branches using
-    a learned gating mechanism. It aggregates outputs from child nodes based
-    on routing weights and applies a load-balancing penalty.
+    This node:
+    - Computes routing weights using a configurable gating mechanism
+    - Dispatches inputs to child nodes (experts or sub-routers)
+    - Aggregates outputs using weighted combination
+    - Propagates routing loss upward
 
-    Attributes:
-        branches (nn.ModuleList): List of child nodes (experts or routers).
-        gate (nn.Module): Routing gate responsible for computing weights.
-        config (Dict[str, Any]): Configuration dictionary for gate behavior.
+    Args:
+        name (str): Node identifier.
+        config (Dict[str, Any], optional): Router configuration.
     """
 
     def __init__(self, name: str, config: Dict[str, Any] = None):
-        """Initializes the HmoeRouter.
-
-        Args:
-            name (str): Unique name of the router node.
-            config (Dict[str, Any], optional): Configuration for gate selection and parameters.
-        """
         nn.Module.__init__(self)
         super().__init__(type=HmoeNodeType.ROUTER, name=name)
 
-        # Initialize container for child branches
+        # Child nodes (experts or sub-routers)
         self.branches = nn.ModuleList()
 
-        # Placeholder for routing gate (constructed later)
+        # Routing gate (set later via build_gate)
         self.gate = None
 
-        # Store configuration dictionary (fallback to empty dict if None)
+        # Configuration dictionary (gate type, noise, etc.)
         self.config = config or {}
 
     def build_gate(self) -> None:
-        """Constructs the routing gate based on configuration.
+        """Initialize routing gate based on configuration.
 
-        This method determines the appropriate gate type and initializes
-        it using the current subtree feature dimensionality and number of children.
+        Selects input dimension and gate type dynamically.
         """
-        # Determine input dimensionality from subtree features
-        input_dim = len(self.subtree_features)
+        # Determine feature dimension used for routing
+        if len(self.features) > 0:
+            input_dim = len(self.features)  # router-specific features
+        else:
+            input_dim = len(self.subtree_features)  # fallback to full subtree
 
-        # Determine number of child branches
         num_children = len(self.branches)
 
-        # Extract gate configuration parameters
+        # Configuration options
         gate_type = self.config.get('gate_type', 'TCN').upper()
         noise_std = self.config.get('noise_std', 0.1)
 
-        # Bypass the competitive gate completely for independent, parallel task routing
+        # Pass-through routing (uniform weights)
         if gate_type == 'PASS_THROUGH':
             self.gate = None
             return
 
-        # Instantiate appropriate gate type
+        # Select gate implementation
         if gate_type == 'LINEAR':
             self.gate = HmoeGate(input_dim=input_dim, num_children=num_children)
             self.gate.noise_std = noise_std
 
         elif gate_type == 'TOPK':
-            # Retrieve top-k parameter for sparse routing
             k_val = self.config.get('top_k', 1)
-            self.gate = HmoeGateTopK(input_dim, num_children, k=k_val, noise_std=noise_std)
+            self.gate = HmoeGateTopK(
+                input_dim, num_children,
+                k=k_val,
+                noise_std=noise_std
+            )
 
         elif gate_type == 'GRU':
-            # Retrieve hidden dimension for GRU-based gate
             hidden_dim = self.config.get('hidden_dim', 32)
-            self.gate = HmoeGateGRU(input_dim, num_children, hidden_dim=hidden_dim, noise_std=noise_std)
+            self.gate = HmoeGateGRU(
+                input_dim,
+                num_children,
+                hidden_dim=hidden_dim,
+                noise_std=noise_std
+            )
 
         else:
-            # Default to TCN-based gate
+            # Default: temporal convolutional gate
             self.gate = HmoeGateTCN(
                 input_dim=input_dim,
                 num_children=num_children,
@@ -93,132 +96,135 @@ class HmoeRouter(HmoeNode):
             )
 
     def _serialize_node(self) -> Dict[str, Any]:
-        """Serializes the router node configuration.
+        """Serialize router structure recursively.
 
         Returns:
-            Dict[str, Any]: Dictionary representation of the router.
+            Dict[str, Any]: JSON-like representation of the node.
         """
-        # Construct dictionary including gate configuration and serialized children
         return {
             'name': self.name,
             'type': self.type.name,
             'gate_type': self.config.get('gate_type', 'TCN'),
             'noise_std': self.config.get('noise_std', 0.1),
+            'features': [f.name for f in self.features] if self.features else [],
             'children': [child._serialize_node() for child in self.branches]
         }
 
     def _gather_tasks(self, task_dict: Dict[str, HmoeTask]) -> None:
-        """Aggregates tasks from all child branches.
-
-        Args:
-            task_dict (Dict[str, HmoeTask]): Dictionary to populate with tasks.
-        """
-        # Recursively collect tasks from each child node
+        """Collect tasks from all children recursively."""
         for child in self.branches:
             child._gather_tasks(task_dict)
 
     def link_tasks(self, global_tasks: List[HmoeTask]) -> None:
-        """Propagates task linking to all child nodes.
-
-        Args:
-            global_tasks (List[HmoeTask]): List of globally defined tasks.
-        """
-        # Delegate task linking to children that support it
+        """Propagate global task definitions to children."""
         for child in self.branches:
             if hasattr(child, 'link_tasks'):
                 child.link_tasks(global_tasks)
 
     def forward(self, payload: HmoeInput) -> HmoeOutput:
-        """Routes input through child branches and aggregates outputs.
+        """Execute routing and aggregation.
 
         Args:
-            payload (HmoeInput): Input payload containing feature data.
+            payload (HmoeInput): Input data wrapper.
 
         Returns:
-            HmoeOutput: Aggregated output with routing loss.
+            HmoeOutput: Aggregated outputs and routing loss.
         """
-        # Determine features required by all child branches
-        branch_features = self.subtree_features
+        # Extract features used by children
+        child_features = self.subtree_features
 
-        # Narrow payload to only required features
-        narrowed_payload = payload.get_subset(branch_features)
+        # Payload passed to children
+        child_payload = payload.get_subset(child_features)
 
-        # Compute routing weights using the gate
-        if self.gate is None:
-            # Pure parallel split: give 100% traffic to ALL children unconditionally
-            raw_t = narrowed_payload.to_tensor()
-            gate_weights = torch.ones(raw_t.size(0), raw_t.size(1), len(self.branches), device=raw_t.device)
+        # Payload used for routing decision
+        if len(self.features) > 0:
+            router_payload = payload.get_subset(self.features)
         else:
-            gate_weights = self.gate(narrowed_payload)
+            router_payload = child_payload
 
-        # Collect outputs from each child branch
+        # Compute routing weights [B, T, num_children]
+        if self.gate is None:
+            # Uniform routing (pass-through)
+            raw_t = router_payload.to_tensor()
+
+            gate_weights = torch.ones(
+                raw_t.size(0),  # batch
+                raw_t.size(1),  # sequence length
+                len(self.branches),  # number of experts
+                device=raw_t.device
+            )
+        else:
+            gate_weights = self.gate(router_payload)
+
+        # Execute all child nodes
         child_outputs: List[HmoeOutput] = []
         for child in self.branches:
-            child_outputs.append(child(narrowed_payload))
+            child_outputs.append(child(child_payload))
 
-        # Initialize structure for aggregated task logits
+        # Collect all task names across children
         pooled_task_logits: Dict[str, HmoeTensor] = {}
-
-        # Determine all unique task names across children
         all_task_names = set()
+
         for out in child_outputs:
             all_task_names.update(out.task_logits.keys())
 
-        # Aggregate outputs for each task
+        # Aggregate outputs per task
         for task_name in all_task_names:
             weighted_tensors = []
-            ref_indices = None
+            ref_indices = None  # used to preserve metadata
 
-            # Iterate over child outputs and apply routing weights
+            # Combine contributions from each child
             for child_idx, child_out in enumerate(child_outputs):
                 if task_name in child_out.task_logits:
                     tensor = child_out.task_logits[task_name].to_tensor()
 
-                    # Capture indices from first occurrence
+                    # Store indices once (assumed consistent across children)
                     if ref_indices is None:
                         ref_indices = child_out.task_logits[task_name].get_indices()
 
-                    # Extract routing weight for this child and expand dimensions
+                    # Extract routing weights for this child [B, T, 1]
                     weight = gate_weights[:, :, child_idx].unsqueeze(-1)
 
-                    # Apply weight to child output tensor
+                    # Apply weighting
                     weighted_tensors.append(tensor * weight)
 
-            # Sum weighted tensors across children
+            # Sum weighted contributions across children
             gated_data = torch.stack(weighted_tensors).sum(dim=0)
 
-            # Store aggregated result in HmoeTensor format
+            # Wrap back into HmoeTensor
             pooled_task_logits[task_name] = HmoeTensor(
                 tensor=gated_data,
                 indices=ref_indices
             )
 
-        # Compute load-balancing penalty for routing distribution
-        num_branches = len(self.branches)
+        # No explicit auxiliary routing loss at this level
+        # (load balancing handled inside gates via dynamic bias)
+        total_gate_loss = torch.tensor(
+            0.0,
+            device=router_payload.to_tensor().device
+        )
 
-        if num_branches > 1 and self.gate is not None:
-            # Compute average routing probability per branch
-            mean_routing_probs = gate_weights.mean(dim=(0, 1))
-
-            # Encourage uniform distribution across branches
-            balance_loss = (num_branches * torch.sum(mean_routing_probs ** 2)) - 1.0
-        else:
-            # No penalty when only one branch exists or gate is bypassed (PASS_THROUGH)
-            balance_loss = torch.tensor(0.0, device=narrowed_payload.to_tensor().device)
-
-        # Aggregate routing losses from child nodes
-        child_routing_loss_raw = torch.tensor(0.0, device=narrowed_payload.to_tensor().device)
+        # Accumulate routing loss from children
+        child_routing_loss_raw = torch.tensor(
+            0.0,
+            device=router_payload.to_tensor().device
+        )
 
         for out in child_outputs:
-            # Only include routing loss if present
             if getattr(out, 'routing_loss', None) is not None:
-                child_routing_loss_raw += out.routing_loss.to_tensor().to(narrowed_payload.to_tensor().device)
+                child_routing_loss_raw += (
+                    out.routing_loss
+                    .to_tensor()
+                    .to(router_payload.to_tensor().device)
+                )
 
-        # Combine local balance loss with child routing losses
-        total_routing_loss_raw = balance_loss + child_routing_loss_raw
+        # Total routing loss passed upward
+        total_routing_loss_raw = total_gate_loss + child_routing_loss_raw
 
-        # Return final output with aggregated logits and routing loss
         return HmoeOutput(
             task_logits=pooled_task_logits,
-            routing_loss=HmoeTensor(tensor=total_routing_loss_raw, indices=[])
+            routing_loss=HmoeTensor(
+                tensor=total_routing_loss_raw,
+                indices=[]
+            )
         )
