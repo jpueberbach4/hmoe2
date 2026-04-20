@@ -64,9 +64,22 @@ A Matrix Profile is vulnerable to time-warping (a crash taking 5 days looks comp
 
 A Signature measures pure geometry, outputting a consistent state "barcode" regardless of the market's velocity. It translates the slow, grinding chop of a multi-month downtrend and the sharp violence of a flash-crash into stable, recognizable macro-regimes for the downstream task heads.
 
-NOTE: it is VERY DIFFICULT to detect regimes properly using Neural Networks. Every pullback potentially switches regimes. You will have to provide for very good labelling, features (various TF) and likely custom filtering code. You really need to comeup with innovative solutions for proper regime detection. When you have proper regime detection, the detection of the intermediate bottoms/tops is childsplay (that was one of the first things i had >80 percent accurate using this architecture).
+**UPDATE**: I’ve been working on this project for about three months. The focus has been on structuring features and experimenting with different techniques using an HMOE to achieve two objectives:
 
-For labelling i used the following approach: determine chop arreas first using a centered efficiency ratio. If the price did not move much across a timewindow i assign it a certain value. The remaining open blocks are then easily identifyable as either bull (first candle < last candle) or as bear (inverted). This gives little flickering in the labels. 
+a) detect macro regimes without lookahead, and
+b) identify pivots within those regimes (bottoms in uptrends, tops in downtrends), also without lookahead.
+
+Financial markets are notoriously difficult to model due to their non-stationary nature and low signal-to-noise ratio. What I’m attempting is therefore highly challenging—especially without direct access to L2 and L3 data.
+
+That said, certain aspects of L2 can be approximated through careful feature engineering. For example, absorption zones (buy/sell walls) can be inferred from very low time-frame price and volume data.
+
+After many iterations, I’m starting to see stability in walk-forward regime detection, and early signs of a statistical edge are emerging. The current model, trained on GBP/USD data from 2006–2022, appears to generalize reasonably well to other assets, including Bitcoin and the Japanese yen.
+
+Interestingly, the primary bottlenecks were not in the software, but in labeling and feature design—data leakage in particular proved to be a persistent issue. Moving to autoencoders led to a significant performance improvement, with the approach inspired by MP3 compression techniques.
+
+I’ll be sharing details of the autoencoder architecture soon. Next, I plan to explore two additional approaches to potentially enhance performance further: Continuous Wavelet Transforms (CWT) and Singular Spectrum Analysis (SSA).
+
+The overall architecture is now in a solid place, but the work remains experimental. Here and there additional parameters need to be inserted. Some are still hardcoded.
 
 ## License
 
