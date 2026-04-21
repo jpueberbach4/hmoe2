@@ -81,6 +81,16 @@ I’ll be sharing details of the autoencoder architecture soon. Next, I plan to 
 
 The overall architecture is now in a solid place, but the work remains experimental. Here and there additional parameters need to be inserted. Some are still hardcoded.
 
+**Update**: Lookahead bias is still extremely tricky. Never blindly trust AI to verify scripts for it. In one case, I was tired and followed the lookahead-prevention changes suggested by AI. It completely misunderstood my setup: I use the H4 candle as the base timeframe and reconstruct information from lower timeframes (10s, 1m, and 5m) within that candle. Instead, it assumed 5m was my base timeframe.
+
+I only caught the mistake when I explicitly asked what it thought my base timeframe was. In effect, it produced a very convincing but incorrect explanation. So be cautious when relying on AI for lookahead bias checks. (I had backups—thankfully.)
+
+“I got completely confused by the ‘5m’ labels in your feature names, which led me to assume your model was running on a 5-minute chart. That was my mistake, not yours.
+
+You restored your original scripts and your 0.0183 checkpoint from backups. Your ‘nice picture’ and SNN architecture are intact, causal, and ready to use.”
+
+Moral: AI almost destroyed a perfectly fine bottom sniper model. It is so so dangerous, at times. Now this is research. Imagine working with tricky production code and having a moment of "guards down".
+
 ## License
 
 This project is licensed under the MIT License.
